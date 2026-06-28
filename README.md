@@ -9,6 +9,27 @@
 
 Local TTS server powered by **Qwen3-TTS** (Alibaba / Qwen team) with native **C++/GGML** inference — no Python or PyTorch required for the core engine. Runs on CPU or NVIDIA GPU (CUDA) using quantized GGUF models. Supports 11 languages, 9 voices, ES+EN code-switching, and PCM streaming.
 
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Requirements](#requirements)
+- [Building](#building)
+  - [CPU](#cpu-no-gpu-required)
+  - [GPU (NVIDIA CUDA)](#gpu-nvidia-cuda)
+  - [Vulkan](#vulkan-amd--intel--nvidia)
+- [Downloading Models](#downloading-models)
+- [Running the Server](#running-the-server)
+- [Environment Variables](#environment-variables)
+- [API Reference](#api-reference)
+- [Standalone C++ Server](#standalone-c-server)
+- [Streaming Notes](#streaming-notes)
+- [Voice Cloning](#voice-cloning)
+- [Project Structure](#project-structure)
+- [Tested Models](#tested-models)
+- [Credits](#credits)
+- [License](#license)
+
 ## Features
 
 - **Native C++ inference** via GGML — no PyTorch, no 3GB model downloads
@@ -69,6 +90,8 @@ python3 -m venv .venv
 
 > **Note:** The C++ server (`tts-server`) runs standalone without Python. The Python wrapper adds the web UI, REST API, and MP3 conversion. See [Standalone C++](#standalone-c-server) below.
 
+> **Windows / WSL2:** This project has only been tested on Linux. It may work on Windows via WSL2 or native compilation with MSVC/MinGW, but this has not been verified. Feel free to try it and open an issue with your results — we'd love to hear from you.
+
 ## Building
 
 ### CPU (no GPU required)
@@ -90,11 +113,37 @@ Output: `build/tts-server`
 
 # Multiple architectures (e.g. 75 for RTX 20xx, 86 for RTX 30xx)
 ./scripts/build-gpu.sh "75;86"
+
+# All supported architectures (for distributing binaries, ~15+ min)
+./scripts/build-gpu.sh all
 ```
 
 Output: `build-gpu/tts-server`
 
 > **Build time:** ~5 min for one architecture, ~15 min for all default architectures. The script auto-detects your GPU's compute capability to minimize compile time.
+
+<details>
+<summary><b>GPU architecture reference</b> (click to expand)</summary>
+
+| Code | Architecture name | GPU series | Examples |
+|------|-------------------|------------|----------|
+| `75` | Turing | RTX 20xx / GTX 16xx | RTX 2070, RTX 2080 Ti, GTX 1660 |
+| `80` | Ampere | A100 (data center) | A100, A30 |
+| `86` | Ampere | RTX 30xx / A40 / A6000 | RTX 3060, RTX 3090, RTX 3080 |
+| `89` | Ada Lovelace | RTX 40xx / L40 | RTX 4060, RTX 4090, RTX 4080 |
+| `120a` | Blackwell | RTX 50xx | RTX 5070, RTX 5080, RTX 5090 |
+| `121a` | Blackwell | B100 / B200 (data center) | B100, B200 |
+
+**How to find your code:**
+
+```bash
+nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+# Output e.g. "8.6" → remove the dot → use "86"
+```
+
+Or just run `./scripts/build-gpu.sh` without arguments — it auto-detects for you.
+
+</details>
 
 ### Vulkan (AMD / Intel / NVIDIA)
 
@@ -173,6 +222,32 @@ GGML_BACKEND=CUDA1 ./start-gpu.sh start  # Use second GPU
 |---|---|
 | **8871** | Web UI + REST API (Python wrapper) |
 | **8870** | C++ TTS server (internal, managed by wrapper) |
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `GGML_BACKEND` | `CPU` | Backend for inference: `CPU`, `CUDA0`, `CUDA1`, `VULKAN0` |
+| `CUDA_VISIBLE_DEVICES` | (all) | Restrict which NVIDIA GPUs are visible (by UUID or index) |
+| `TTS_HOST` | `127.0.0.1` | C++ server bind address |
+| `TTS_PORT` | `8870` | C++ server port (internal) |
+| `WRAPPER_PORT` | `8871` | Python wrapper / web UI port |
+
+**Examples:**
+
+```bash
+# Use second GPU
+GGML_BACKEND=CUDA1 ./start-gpu.sh start
+
+# Restrict to specific GPU by UUID (useful for multi-GPU systems)
+CUDA_VISIBLE_DEVICES=GPU-3d1bda3d-12da-cd16-0404-98de27b7d8d1 ./start-gpu.sh start
+
+# Bind to all interfaces (LAN access)
+TTS_HOST=0.0.0.0 ./start-cpu.sh start
+
+# Custom wrapper port
+WRAPPER_PORT=9000 ./start-cpu.sh start
+```
 
 ## API Reference
 
@@ -254,6 +329,14 @@ The C++ server supports HTTP chunked transfer for PCM audio. However, the full a
 - Chunks arrive together at the end of synthesis (not progressively during generation)
 - Still beneficial: no temporary files, lower memory usage, client can start playback as bytes arrive
 - For true progressive streaming, the HTTP library (`cpp-httplib`) would need explicit flush support after each codec chunk
+
+## Voice Cloning
+
+Voice cloning is inherited from the upstream [qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp) project and the CustomVoice GGUF models. The C++ server exposes endpoints for cloning a voice from a reference audio clip.
+
+> **Note:** This feature has **not been tested** by the maintainer of this repo. It should work as-is since it's part of the upstream C++ server, but no verification has been done. If you test it, please open an issue with your results.
+
+For usage examples, see the upstream project's `examples/` directory (`clone.sh`, `clone.cmd`).
 
 ## Project Structure
 

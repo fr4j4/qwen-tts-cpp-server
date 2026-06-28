@@ -6,6 +6,7 @@
 #   ./scripts/build-gpu.sh              # auto-detect GPU architectures
 #   ./scripts/build-gpu.sh 86           # force sm_86 only (RTX 30/40 series)
 #   ./scripts/build-gpu.sh "75;86"      # build for sm_75 and sm_86
+#   ./scripts/build-gpu.sh all          # build for all supported architectures (slower, ~15+ min)
 set -e
 cd "$(dirname "$0")/.."
 
@@ -38,7 +39,10 @@ echo "Using nvcc: $NVCC"
 CUDA_DIR=$(dirname "$(dirname "$NVCC")")
 
 # Detect GPU architectures if not provided
-if [ -z "$1" ]; then
+if [ "$1" = "all" ]; then
+  ARCHS="75;80;86;89;120a;121a"
+  echo "Building for ALL supported architectures: sm_${ARCHS//;/, sm_}"
+elif [ -z "$1" ]; then
   echo "Detecting GPU architectures..."
   if command -v nvidia-smi &>/dev/null; then
     ARCHS=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | \
@@ -56,9 +60,10 @@ if [ -z "$1" ]; then
     echo "Could not auto-detect. Using default: 86 (RTX 30/40 series)"
     ARCHS="86"
   fi
-else
-  ARCHS="$1"
-  echo "Using specified architectures: sm_${ARCHS//;/, sm_}"
+  else
+    ARCHS="$1"
+    echo "Using specified architectures: sm_${ARCHS//;/, sm_}"
+  fi
 fi
 
 # Check for ggml submodule
