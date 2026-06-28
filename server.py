@@ -29,8 +29,15 @@ BASE_DIR = Path(__file__).resolve().parent
 USE_GPU = os.environ.get("GGML_BACKEND", "cpu").upper().startswith("CUDA")
 BUILD_DIR = "build-gpu" if USE_GPU else "build"
 TTS_BINARY = BASE_DIR / BUILD_DIR / "tts-server"
-TALKER_MODEL = BASE_DIR / "models" / "qwen-talker-0.6b-customvoice-Q4_K_M.gguf"
-CODEC_MODEL = BASE_DIR / "models" / "qwen-tokenizer-12hz-Q4_K_M.gguf"
+
+# VoiceDesign mode: use 1.7B VoiceDesign model instead of 0.6B CustomVoice
+VOICE_DESIGN = os.environ.get("QWEN_TTS_VOICE_DESIGN", "").lower() in ("true", "1", "yes")
+if VOICE_DESIGN:
+    TALKER_MODEL = BASE_DIR / os.environ.get("QWEN_TTS_TALKER_MODEL", "models/qwen-talker-1.7b-voicedesign-Q4_K_M.gguf")
+    CODEC_MODEL = BASE_DIR / os.environ.get("QWEN_TTS_CODEC_MODEL", "models/qwen-tokenizer-12hz-Q4_K_M.gguf")
+else:
+    TALKER_MODEL = BASE_DIR / "models" / "qwen-talker-0.6b-customvoice-Q4_K_M.gguf"
+    CODEC_MODEL = BASE_DIR / "models" / "qwen-tokenizer-12hz-Q4_K_M.gguf"
 STATIC_DIR = BASE_DIR / "static"
 
 CPP_SERVER_HOST = "127.0.0.1"
@@ -40,7 +47,20 @@ CPP_SERVER_URL = f"http://{CPP_SERVER_HOST}:{CPP_SERVER_PORT}"
 SPEAKERS = ["aiden", "dylan", "eric", "ryan", "serena", "sohee", "uncle_fu", "ono_anna", "vivian"]
 LANGUAGES = ["auto", "spanish", "english", "chinese", "french", "german", "italian", "japanese", "korean", "portuguese", "russian"]
 
+# VoiceDesign example instructions (shown in UI as quick-pick presets)
+VOICE_DESIGN_EXAMPLES = [
+    "A young female voice, warm and gentle, moderate pacing.",
+    "A deep male voice, calm and authoritative, slow pacing.",
+    "A crying, deeply sad, and trembling female voice, slow pacing.",
+    "An excited and energetic young male voice, fast pacing.",
+    "A soft whispering female voice, mysterious and quiet.",
+    "An elderly male voice, wise and slow, with a slight rasp.",
+    "A cheerful female voice, bright and bubbly, fast pacing.",
+    "A serious male voice, neutral and professional, moderate pacing.",
+]
+
 BACKEND_LABEL = "GPU (CUDA)" if USE_GPU else "CPU"
+MODEL_LABEL = "VoiceDesign 1.7B" if VOICE_DESIGN else "CustomVoice 0.6B"
 
 app = FastAPI(title="Qwen3-TTS GGUF POC")
 
@@ -128,16 +148,30 @@ class TTSRequest(BaseModel):
     speed: float = 1.0
     format: str = "mp3"  # mp3 or wav
     stream: bool = False  # streaming mode (PCM passthrough)
+    instructions: Optional[str] = None  # VoiceDesign instructions (voice description)
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "cpp_server": CPP_SERVER_URL, "backend": BACKEND_LABEL}
+    return {
+        "status": "ok",
+        "cpp_server": CPP_SERVER_URL,
+        "backend": BACKEND_LABEL,
+        "model": MODEL_LABEL,
+        "voice_design": VOICE_DESIGN,
+    }
 
 
 @app.get("/api/speakers")
 async def speakers():
-    return {"speakers": SPEAKERS, "languages": LANGUAGES, "backend": BACKEND_LABEL}
+    return {
+        "speakers": SPEAKERS,
+        "languages": LANGUAGES,
+        "backend": BACKEND_LABEL,
+        "model": MODEL_LABEL,
+        "voice_design": VOICE_DESIGN,
+        "voice_design_examples": VOICE_DESIGN_EXAMPLES if VOICE_DESIGN else [],
+    }
 
 
 @app.post("/api/tts")
@@ -157,6 +191,8 @@ async def tts(req: TTSRequest):
         }
         if req.speed != 1.0:
             payload["speed"] = req.speed
+        if req.instructions:
+            payload["instructions"] = req.instructions
 
         async def pcm_stream():
             async with httpx.AsyncClient(timeout=120) as client:
@@ -186,6 +222,8 @@ async def tts(req: TTSRequest):
     }
     if req.speed != 1.0:
         payload["speed"] = req.speed
+    if req.instructions:
+        payload["instructions"] = req.instructions
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
@@ -231,5 +269,5 @@ async def index():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8871))
-    logger.info(f"Backend: {BACKEND_LABEL} | Binary: {BUILD_DIR}/tts-server")
+    logger.info(f"Backend: {BACKEND_LABEL} | Model: {MODEL_LABEL} | Binary: {BUILD_DIR}/tts-server")
     uvicorn.run(app, host="0.0.0.0", port=port)
