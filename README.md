@@ -1,5 +1,12 @@
 # qwen-tts-cpp-server
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Platform: Linux](https://img.shields.io/badge/Platform-Linux-yellow.svg)](https://www.linux.org/)
+[![Backend: GGML](https://img.shields.io/badge/Backend-GGML_C++-orange.svg)](https://github.com/ggerganov/ggml)
+[![Models: GGUF](https://img.shields.io/badge/Models-GGUF_Q4_K_M-green.svg)](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md)
+[![Languages: 11](https://img.shields.io/badge/Languages-11-purple.svg)](#)
+[![GPU: CUDA](https://img.shields.io/badge/GPU-CUDA_Vulkan_CPU-brightgreen.svg)](#)
+
 Local TTS server powered by **Qwen3-TTS** (Alibaba / Qwen team) with native **C++/GGML** inference — no Python or PyTorch required for the core engine. Runs on CPU or NVIDIA GPU (CUDA) using quantized GGUF models. Supports 11 languages, 9 voices, ES+EN code-switching, and PCM streaming.
 
 ## Features
