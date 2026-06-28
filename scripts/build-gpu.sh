@@ -60,10 +60,9 @@ elif [ -z "$1" ]; then
     echo "Could not auto-detect. Using default: 86 (RTX 30/40 series)"
     ARCHS="86"
   fi
-  else
-    ARCHS="$1"
-    echo "Using specified architectures: sm_${ARCHS//;/, sm_}"
-  fi
+else
+  ARCHS="$1"
+  echo "Using specified architectures: sm_${ARCHS//;/, sm_}"
 fi
 
 # Check for ggml submodule
