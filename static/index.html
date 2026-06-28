@@ -379,6 +379,7 @@ audio { width: 100%; margin-top: 12px; }
 
     <!-- VoiceDesign instructions panel -->
     <div id="instructionsPanel" style="display:none;">
+      <label id="instructionsReqLabel" data-i18n="instructionsRequired" style="display:none; font-size:12px; color:var(--accent); margin-bottom:4px;">Descripción de voz (obligatorio)</label>
       <textarea id="instructionsInput" data-i18n-ph="instructionsPlaceholder" placeholder="Describe la voz: A young female voice, warm and gentle, moderate pacing." rows="2" style="margin-bottom:8px; width:100%; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:10px; color:var(--text); font-size:14px; resize:vertical;"></textarea>
       <div class="presets" id="instructionsPresets"></div>
     </div>
@@ -444,6 +445,7 @@ const i18n = {
     streamHint: '(PCM directo del C++)',
     instructionsLabel: 'Activar instrucciones de voz',
     instructionsHint: '(VoiceDesign: describe la voz)',
+    instructionsRequired: 'Descripción de voz (obligatorio)',
     instructionsPlaceholder: 'Describe la voz: A young female voice, warm and gentle, moderate pacing.',
     streamNoteTitle: 'Nota sobre streaming:',
     streamNoteBody: 'El servidor C++ transfiere audio en chunks via HTTP chunked transfer, pero la generacion completa ocurre antes del envio. Los chunks llegan juntos al final de la sintesis. Sigue siendo util: sin archivos temporales, menos memoria, y el cliente puede reproducir apenas llegan los bytes.',
@@ -485,6 +487,7 @@ const i18n = {
     streamHint: '(raw PCM from C++ server)',
     instructionsLabel: 'Enable voice instructions',
     instructionsHint: '(VoiceDesign: describe the voice)',
+    instructionsRequired: 'Voice description (required)',
     instructionsPlaceholder: 'Describe the voice: A young female voice, warm and gentle, moderate pacing.',
     streamNoteTitle: 'Streaming note:',
     streamNoteBody: 'The C++ server transfers audio in chunks via HTTP chunked transfer, but full generation completes before sending. Chunks arrive together at the end of synthesis. Still useful: no temp files, less memory, and the client can play as bytes arrive.',
@@ -537,7 +540,12 @@ function setLang(lang) {
     }
     // Show VoiceDesign controls if model supports it
     if (data.voice_design) {
-      $('instructionsToggleRow').style.display = 'flex';
+      // Hide voice selector — VoiceDesign ignores speaker, voice is defined by instructions
+      $('voiceSelect').parentElement.style.display = 'none';
+      // Show instructions panel directly (no toggle — instructions are mandatory in VoiceDesign)
+      instructionsMode = true;
+      $('instructionsPanel').style.display = 'block';
+      $('instructionsReqLabel').style.display = 'block';
       // Load example presets
       const sp = await fetch('/api/speakers');
       const spData = await sp.json();
