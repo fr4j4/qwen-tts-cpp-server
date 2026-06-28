@@ -37,6 +37,7 @@ struct tts_request {
     std::string instructions;  // OAI instructions, mapped to the ABI instruct field
     std::string format;        // "pcm" (stream) or "wav" (one-shot)
     float       speed;         // OAI speed, parsed then ignored (no time stretch in the ABI)
+    int64_t     seed = -1;     // Seed for deterministic generation (-1 = random)
 };
 
 // The adapter pushes mono f32 24 kHz audio here. Returns false to abort the
@@ -139,6 +140,9 @@ static bool tts_parse_request(const std::string & body, tts_request & req, std::
 
     yyjson_val * speed = yyjson_obj_get(root, "speed");
     req.speed          = yyjson_is_num(speed) ? (float) yyjson_get_num(speed) : 1.0f;
+
+    yyjson_val * seed = yyjson_obj_get(root, "seed");
+    req.seed          = yyjson_is_num(seed) ? (int64_t) yyjson_get_int(seed) : -1;
 
     yyjson_doc_free(doc);
 

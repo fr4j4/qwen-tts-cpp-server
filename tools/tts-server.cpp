@@ -108,6 +108,7 @@ int main(int argc, char ** argv) {
         if (!req.instructions.empty()) {
             p.instruct = req.instructions.c_str();
         }
+        p.seed = req.seed;
 
         // Trampoline : the C ABI on_chunk forwards to the C++ sink.
         const tts_sink * sink_ptr = &sink;

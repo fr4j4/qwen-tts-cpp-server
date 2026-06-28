@@ -370,6 +370,31 @@ audio { width: 100%; margin-top: 12px; }
       <span class="toggle-hint" data-i18n="streamHint">(PCM directo del C++)</span>
     </div>
 
+    <!-- VoiceDesign instructions toggle -->
+    <div class="toggle-row" id="instructionsToggleRow" style="display:none;">
+      <div id="instructionsToggle" class="toggle" onclick="toggleInstructions()"></div>
+      <span class="toggle-label" data-i18n="instructionsLabel">Enable voice instructions</span>
+      <span class="toggle-hint" data-i18n="instructionsHint">(VoiceDesign: describe la voz)</span>
+    </div>
+
+    <!-- VoiceDesign instructions panel -->
+    <div id="instructionsPanel" style="display:none;">
+      <label id="instructionsReqLabel" data-i18n="instructionsRequired" style="display:none; font-size:12px; color:var(--accent); margin-bottom:4px;">Descripción de voz (obligatorio)</label>
+      <textarea id="instructionsInput" data-i18n-ph="instructionsPlaceholder" placeholder="Describe la voz: A young female voice, warm and gentle, moderate pacing." rows="2" style="margin-bottom:8px; width:100%; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:10px; color:var(--text); font-size:14px; resize:vertical;"></textarea>
+      <div class="presets" id="instructionsPresets"></div>
+    </div>
+
+    <!-- Seed control -->
+    <div class="row" id="seedRow" style="align-items:flex-end;">
+      <div class="field" style="flex:1;">
+        <label data-i18n="lblSeed">Seed</label>
+        <input type="number" id="seedInput" value="-1" min="-1" style="width:100%; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:10px; color:var(--text); font-size:14px;">
+      </div>
+      <div class="field">
+        <button class="preset-btn" onclick="randomSeed()" data-i18n="btnRandomSeed">Aleatorio</button>
+      </div>
+    </div>
+
     <!-- Streaming note -->
     <div id="streamNote" class="stream-note">
       <strong data-i18n="streamNoteTitle">Nota sobre streaming:</strong>
@@ -391,6 +416,7 @@ audio { width: 100%; margin-top: 12px; }
 <script>
 let lastBlobUrl = null;
 let streamMode = false;
+let instructionsMode = false;
 let uiLang = 'es';
 const $ = (id) => document.getElementById(id);
 
@@ -417,10 +443,16 @@ const i18n = {
     lblFormat: 'Formato',
     streamLabel: 'Streaming en tiempo real',
     streamHint: '(PCM directo del C++)',
+    instructionsLabel: 'Activar instrucciones de voz',
+    instructionsHint: '(VoiceDesign: describe la voz)',
+    instructionsRequired: 'Descripción de voz (obligatorio)',
+    instructionsPlaceholder: 'Describe la voz: A young female voice, warm and gentle, moderate pacing.',
     streamNoteTitle: 'Nota sobre streaming:',
     streamNoteBody: 'El servidor C++ transfiere audio en chunks via HTTP chunked transfer, pero la generacion completa ocurre antes del envio. Los chunks llegan juntos al final de la sintesis. Sigue siendo util: sin archivos temporales, menos memoria, y el cliente puede reproducir apenas llegan los bytes.',
     btnSynth: 'Sintetizar',
     btnDownload: 'Descargar',
+    btnRandomSeed: 'Aleatorio',
+    lblSeed: 'Seed',
     statusGenerating: 'Generando audio...',
     statusStreaming: 'Streaming audio en tiempo real...',
     metaGenTime: 'Generacion',
@@ -453,10 +485,16 @@ const i18n = {
     lblFormat: 'Format',
     streamLabel: 'Real-time streaming',
     streamHint: '(raw PCM from C++ server)',
+    instructionsLabel: 'Enable voice instructions',
+    instructionsHint: '(VoiceDesign: describe the voice)',
+    instructionsRequired: 'Voice description (required)',
+    instructionsPlaceholder: 'Describe the voice: A young female voice, warm and gentle, moderate pacing.',
     streamNoteTitle: 'Streaming note:',
     streamNoteBody: 'The C++ server transfers audio in chunks via HTTP chunked transfer, but full generation completes before sending. Chunks arrive together at the end of synthesis. Still useful: no temp files, less memory, and the client can play as bytes arrive.',
     btnSynth: 'Synthesize',
     btnDownload: 'Download',
+    btnRandomSeed: 'Random',
+    lblSeed: 'Seed',
     statusGenerating: 'Generating audio...',
     statusStreaming: 'Streaming audio in real time...',
     metaGenTime: 'Generation',
@@ -483,9 +521,11 @@ function setLang(lang) {
   // Update placeholder
   const input = $('textInput');
   if (i18n[lang].inputPlaceholder) input.placeholder = i18n[lang].inputPlaceholder;
+  const instrInput = $('instructionsInput');
+  if (instrInput && i18n[lang].instructionsPlaceholder) instrInput.placeholder = i18n[lang].instructionsPlaceholder;
 }
 
-// --- Detect backend on load ---
+// --- Detect backend and VoiceDesign on load ---
 (async () => {
   try {
     const r = await fetch('/api/health');
@@ -497,6 +537,29 @@ function setLang(lang) {
       $('infoBackend').style.color = 'var(--accent)';
       $('infoVram').textContent = '~1-2 GB';
       $('infoVram').style.color = 'var(--accent)';
+    }
+    // Show VoiceDesign controls if model supports it
+    if (data.voice_design) {
+      // Hide voice selector — VoiceDesign ignores speaker, voice is defined by instructions
+      $('voiceSelect').parentElement.style.display = 'none';
+      // Show instructions panel directly (no toggle — instructions are mandatory in VoiceDesign)
+      instructionsMode = true;
+      $('instructionsPanel').style.display = 'block';
+      $('instructionsReqLabel').style.display = 'block';
+      // Load example presets
+      const sp = await fetch('/api/speakers');
+      const spData = await sp.json();
+      if (spData.voice_design_examples && spData.voice_design_examples.length) {
+        const container = $('instructionsPresets');
+        spData.voice_design_examples.forEach(ex => {
+          const btn = document.createElement('button');
+          btn.className = 'preset-btn';
+          btn.textContent = ex.length > 40 ? ex.substring(0, 37) + '...' : ex;
+          btn.title = ex;
+          btn.addEventListener('click', () => { $('instructionsInput').value = ex; });
+          container.appendChild(btn);
+        });
+      }
     }
   } catch (e) {}
 })();
@@ -515,8 +578,20 @@ function toggleStream() {
   }
 }
 
+// --- VoiceDesign instructions toggle ---
+function toggleInstructions() {
+  instructionsMode = !instructionsMode;
+  $('instructionsToggle').classList.toggle('active', instructionsMode);
+  $('instructionsPanel').style.display = instructionsMode ? 'block' : 'none';
+}
+
+// --- Seed control ---
+function randomSeed() {
+  $('seedInput').value = Math.floor(Math.random() * 2147483647);
+}
+
 // --- Presets ---
-document.querySelectorAll('.preset-btn').forEach(btn => {
+document.querySelectorAll('.presets .preset-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     $('textInput').value = btn.dataset.text;
   });
@@ -554,6 +629,9 @@ async function synthesizeStream() {
         voice: $('voiceSelect').value,
         language: $('langSelect').value,
         stream: true,
+        seed: parseInt($('seedInput').value),
+        ...(instructionsMode && $('instructionsInput').value.trim()
+          ? { instructions: $('instructionsInput').value.trim() } : {}),
       }),
     });
 
@@ -649,6 +727,9 @@ async function synthesize() {
         voice: $('voiceSelect').value,
         language: $('langSelect').value,
         format: fmt,
+        seed: parseInt($('seedInput').value),
+        ...(instructionsMode && $('instructionsInput').value.trim()
+          ? { instructions: $('instructionsInput').value.trim() } : {}),
       }),
     });
 
