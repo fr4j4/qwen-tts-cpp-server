@@ -1,0 +1,28 @@
+# Build artifacts
+build/
+build-gpu/
+build-vulkan/
+
+# Models (downloaded separately)
+models/*.gguf
+checkpoints/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Logs and runtime
+*.log
+*.pid
+cpp_server.log
+server.log
+
+# Audio outputs
+*.wav
+*.mp3
+*.pcm
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,1 @@
+qwentts.cpp is a minimal C++17 and GGML port of Qwen3-TTS for zero shot multilingual text to speech.
