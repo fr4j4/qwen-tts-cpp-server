@@ -1,0 +1,45 @@
+# GPU image: builds on top of the cached base image.
+# Only the clone, compile, and model download steps run on each build.
+# The base image (CUDA + deps + venv) stays cached.
+#
+# Usage:
+#   docker build -f docker/Dockerfile.base -t qwen-tts-base:cuda12.6 .
+#   docker build -f docker/Dockerfile.gpu --build-arg BASE_IMAGE=qwen-tts-base:cuda12.6 -t qwen-tts:gpu .
+#   docker run -d --name qwen-tts --gpus all -p 8871:8871 -e GGML_BACKEND=CUDA0 qwen-tts:gpu
+ARG BASE_IMAGE=qwen-tts-base:cuda12.6
+FROM ${BASE_IMAGE}
+
+# Clone the repo (this is where cache breaks — we want fresh code each time)
+ARG REPO_URL=https://github.com/fr4j4/qwen-tts-cpp-server.git
+RUN rm -rf .venv && git clone ${REPO_URL} . \
+    && git submodule update --init --recursive \
+    && python3 -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir fastapi uvicorn httpx pydantic
+
+# libcuda.so.1 is the driver library — only available at runtime via
+# nvidia-container-toolkit. Create a symlink to the CUDA stub for linking.
+RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so.1
+
+# Build GPU version — common architectures (75=Turing, 86=Ampere, 89=Ada)
+ARG GPU_ARCHS="75;86;89"
+RUN ./scripts/build-gpu.sh "${GPU_ARCHS}"
+
+# Remove stub symlink so runtime uses real CUDA driver from nvidia-container-toolkit
+RUN rm -f /usr/lib/x86_64-linux-gnu/libcuda.so.1
+
+# Also build CPU as fallback
+RUN ./scripts/build-cpu.sh
+
+# Download default models (0.6b-customvoice Q4_K_M, 884 MB)
+RUN ./scripts/download-models.sh
+
+# Expose wrapper port
+EXPOSE 8871
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8871/api/health || exit 1
+
+# Start GPU server by default (CUDA0)
+ENV GGML_BACKEND=CUDA0
+CMD ["sh", "-c", "./start-gpu.sh && tail -f server.log"]

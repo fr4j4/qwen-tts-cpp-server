@@ -1,0 +1,40 @@
+# CPU image: standalone, no CUDA required.
+# Works on any x86_64 machine with Docker.
+#
+# Usage:
+#   docker build -f docker/Dockerfile.cpu -t qwen-tts:cpu .
+#   docker run -d --name qwen-tts -p 8871:8871 qwen-tts:cpu
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake g++ git python3 python3-venv python3-pip ffmpeg \
+    libopenblas-dev wget ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Clone the repo with submodules
+RUN git clone --recurse-submodules https://github.com/fr4j4/qwen-tts-cpp-server.git .
+
+# Build CPU version
+RUN ./scripts/build-cpu.sh
+
+# Download default models (0.6b-customvoice Q4_K_M, 884 MB)
+RUN ./scripts/download-models.sh
+
+# Python wrapper dependencies
+RUN python3 -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir fastapi uvicorn httpx pydantic
+
+# Expose wrapper port
+EXPOSE 8871
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8871/api/health || exit 1
+
+# Start CPU server
+CMD ["sh", "-c", "./start-cpu.sh && tail -f server.log"]

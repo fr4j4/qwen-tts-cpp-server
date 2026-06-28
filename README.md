@@ -23,6 +23,7 @@ Local TTS server powered by **Qwen3-TTS** (Alibaba / Qwen team) with native **C+
 - [Environment Variables](#environment-variables)
 - [API Reference](#api-reference)
 - [Standalone C++ Server](#standalone-c-server)
+- [Docker](#docker)
 - [Streaming Notes](#streaming-notes)
 - [Voice Cloning](#voice-cloning)
 - [Project Structure](#project-structure)
@@ -322,6 +323,76 @@ curl http://localhost:8870/v1/audio/speech \
   --output speech.wav
 ```
 
+## Docker
+
+The project includes Docker support for both CPU and GPU (CUDA) deployments.
+
+### CPU (standalone, no base image needed)
+
+```bash
+docker build -f docker/Dockerfile.cpu -t qwen-tts:cpu .
+docker run -d --name qwen-tts -p 8871:8871 qwen-tts:cpu
+```
+
+### GPU (NVIDIA CUDA, split build for faster rebuilds)
+
+The GPU image uses a two-stage build: a base image with CUDA + dependencies (built once, cached) and a thin image that clones, compiles, and runs (rebuilds in seconds when code changes).
+
+```bash
+# 1. Build the base image (run once, ~10 min)
+docker build -f docker/Dockerfile.base -t qwen-tts-base:cuda12.6 .
+
+# 2. Build the GPU image (uses cached base, ~10 min for compilation)
+docker build -f docker/Dockerfile.gpu \
+  --build-arg BASE_IMAGE=qwen-tts-base:cuda12.6 \
+  -t qwen-tts:gpu .
+
+# 3. Run with GPU passthrough (requires nvidia-container-toolkit)
+docker run -d --name qwen-tts \
+  --gpus all \
+  -p 8871:8871 \
+  -e GGML_BACKEND=CUDA0 \
+  qwen-tts:gpu
+```
+
+### Build helper script
+
+```bash
+./docker/build.sh base       # Build base image (CUDA + deps, run once)
+./docker/build.sh gpu        # Build GPU image + run + test
+./docker/build.sh cpu        # Build CPU image + run + test
+./docker/build.sh clean      # Remove app images + container (keeps base)
+./docker/build.sh clean-all  # Remove everything including base image
+```
+
+### GPU architecture targeting
+
+By default, the GPU image compiles for compute capabilities 75 (Turing), 86 (Ampere), and 89 (Ada). To target specific architectures:
+
+```bash
+docker build -f docker/Dockerfile.gpu \
+  --build-arg GPU_ARCHS="75;86" \
+  -t qwen-tts:gpu .
+```
+
+### nvidia-container-toolkit setup
+
+If you haven't configured GPU passthrough for Docker yet:
+
+```bash
+sudo nvidia-ctk runtime configure --runtime docker
+sudo systemctl restart docker
+```
+
+### Docker files
+
+| File | Description |
+|---|---|
+| `docker/Dockerfile.base` | Base image: CUDA 12.6 + build deps + Python venv (cached, built once) |
+| `docker/Dockerfile.gpu` | GPU image: clones repo, builds with CUDA, downloads models |
+| `docker/Dockerfile.cpu` | CPU image: standalone, no CUDA required |
+| `docker/build.sh` | Build helper script with base/gpu/cpu/clean commands |
+
 ## Streaming Notes
 
 The C++ server supports HTTP chunked transfer for PCM audio. However, the full audio generation completes before chunks are sent over the wire. This means:
@@ -361,6 +432,11 @@ qwen-tts-cpp-server/
 │   ├── download-1.7b-voicedesign.sh
 │   └── download-tokenizer.sh
 ├── static/                 # Web UI (bilingual ES/EN)
+├── docker/                 # Docker support
+│   ├── Dockerfile.base     # Base image (CUDA + deps, cached)
+│   ├── Dockerfile.cpu      # CPU image (standalone)
+│   ├── Dockerfile.gpu      # GPU image (uses cached base)
+│   └── build.sh            # Build helper script
 ├── server.py               # Python FastAPI wrapper
 ├── start-cpu.sh            # Start script (CPU mode)
 ├── start-gpu.sh            # Start script (GPU mode)
