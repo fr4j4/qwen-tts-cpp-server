@@ -81,7 +81,11 @@ case "$ACTION" in
       fi
     fi
 
-    BACKEND_LABEL="GPU ($BACKEND)" if $USE_GPU || BACKEND_LABEL="CPU"
+    if $USE_GPU; then
+      BACKEND_LABEL="GPU ($BACKEND)"
+    else
+      BACKEND_LABEL="CPU"
+    fi
 
     echo "Starting Qwen3-TTS VoiceDesign ($BACKEND_LABEL) on port $PORT..."
     echo "  Talker: $TALKER_MODEL"

@@ -92,14 +92,14 @@ def start_cpp_server():
     # Redirect C++ server output to log file (not PIPE — pipe buffer fills
     # and blocks the server during model loading on GPU)
     log_file = open(BASE_DIR / "cpp_server.log", "w")
-    _cpp_proc = subprocess.Popen(
-        [
-            str(TTS_BINARY),
-            "--model", str(TALKER_MODEL),
-            "--codec", str(CODEC_MODEL),
-            "--host", CPP_SERVER_HOST,
-            "--port", str(CPP_SERVER_PORT),
-        ],
+    cmd = [
+        str(TTS_BINARY),
+        "--model", str(TALKER_MODEL),
+        "--codec", str(CODEC_MODEL),
+        "--host", CPP_SERVER_HOST,
+        "--port", str(CPP_SERVER_PORT),
+    ]
+    _cpp_proc = subprocess.Popen(cmd,
         stdout=log_file,
         stderr=subprocess.STDOUT,
         env=env,
@@ -149,6 +149,7 @@ class TTSRequest(BaseModel):
     format: str = "mp3"  # mp3 or wav
     stream: bool = False  # streaming mode (PCM passthrough)
     instructions: Optional[str] = None  # VoiceDesign instructions (voice description)
+    seed: int = -1  # sampling seed; -1 = random
 
 
 @app.get("/api/health")
@@ -193,6 +194,8 @@ async def tts(req: TTSRequest):
             payload["speed"] = req.speed
         if req.instructions:
             payload["instructions"] = req.instructions
+        if req.seed != -1:
+            payload["seed"] = req.seed
 
         async def pcm_stream():
             async with httpx.AsyncClient(timeout=120) as client:
@@ -224,6 +227,8 @@ async def tts(req: TTSRequest):
         payload["speed"] = req.speed
     if req.instructions:
         payload["instructions"] = req.instructions
+    if req.seed != -1:
+        payload["seed"] = req.seed
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:

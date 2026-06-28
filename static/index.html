@@ -383,6 +383,17 @@ audio { width: 100%; margin-top: 12px; }
       <div class="presets" id="instructionsPresets"></div>
     </div>
 
+    <!-- Seed control -->
+    <div class="row" id="seedRow" style="align-items:flex-end;">
+      <div class="field" style="flex:1;">
+        <label data-i18n="lblSeed">Seed</label>
+        <input type="number" id="seedInput" value="-1" min="-1" style="width:100%; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:10px; color:var(--text); font-size:14px;">
+      </div>
+      <div class="field">
+        <button class="preset-btn" onclick="randomSeed()" data-i18n="btnRandomSeed">Aleatorio</button>
+      </div>
+    </div>
+
     <!-- Streaming note -->
     <div id="streamNote" class="stream-note">
       <strong data-i18n="streamNoteTitle">Nota sobre streaming:</strong>
@@ -438,6 +449,8 @@ const i18n = {
     streamNoteBody: 'El servidor C++ transfiere audio en chunks via HTTP chunked transfer, pero la generacion completa ocurre antes del envio. Los chunks llegan juntos al final de la sintesis. Sigue siendo util: sin archivos temporales, menos memoria, y el cliente puede reproducir apenas llegan los bytes.',
     btnSynth: 'Sintetizar',
     btnDownload: 'Descargar',
+    btnRandomSeed: 'Aleatorio',
+    lblSeed: 'Seed',
     statusGenerating: 'Generando audio...',
     statusStreaming: 'Streaming audio en tiempo real...',
     metaGenTime: 'Generacion',
@@ -477,6 +490,8 @@ const i18n = {
     streamNoteBody: 'The C++ server transfers audio in chunks via HTTP chunked transfer, but full generation completes before sending. Chunks arrive together at the end of synthesis. Still useful: no temp files, less memory, and the client can play as bytes arrive.',
     btnSynth: 'Synthesize',
     btnDownload: 'Download',
+    btnRandomSeed: 'Random',
+    lblSeed: 'Seed',
     statusGenerating: 'Generating audio...',
     statusStreaming: 'Streaming audio in real time...',
     metaGenTime: 'Generation',
@@ -562,8 +577,13 @@ function toggleInstructions() {
   $('instructionsPanel').style.display = instructionsMode ? 'block' : 'none';
 }
 
+// --- Seed control ---
+function randomSeed() {
+  $('seedInput').value = Math.floor(Math.random() * 2147483647);
+}
+
 // --- Presets ---
-document.querySelectorAll('.preset-btn').forEach(btn => {
+document.querySelectorAll('.presets .preset-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     $('textInput').value = btn.dataset.text;
   });
@@ -601,6 +621,7 @@ async function synthesizeStream() {
         voice: $('voiceSelect').value,
         language: $('langSelect').value,
         stream: true,
+        seed: parseInt($('seedInput').value),
         ...(instructionsMode && $('instructionsInput').value.trim()
           ? { instructions: $('instructionsInput').value.trim() } : {}),
       }),
@@ -698,6 +719,7 @@ async function synthesize() {
         voice: $('voiceSelect').value,
         language: $('langSelect').value,
         format: fmt,
+        seed: parseInt($('seedInput').value),
         ...(instructionsMode && $('instructionsInput').value.trim()
           ? { instructions: $('instructionsInput').value.trim() } : {}),
       }),
