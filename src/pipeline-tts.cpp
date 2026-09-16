@@ -256,18 +256,18 @@ bool pipeline_tts_load(PipelineTTS * pt,
     // identical for every frame; replaying them removes the per-call
     // ggml_init + node build + sched alloc churn of the legacy path.
     //
-    // DEFAULT OFF (KALI_QWEN_CP_EXEC=1 to enable): under repeated use
-    // the replay path triggers an intermittent segfault inside
-    // libcuda (driver 595.91) on this ggml pin, likely via its CUDA
-    // graph capture/reuse machinery interacting with graph lifetime.
-    // The legacy rebuild path is stable and only ~5% slower; revisit
-    // when the ggml pin is updated.
+    // Safe on this ggml (v0.24) thanks to per-step isolated schedulers:
+    // the historical segfaults came from (a) the old pin's broken CUDA
+    // graph capture keying and (b) shared-pool buffer moves when a large
+    // talker prefill grew the common pool. Both are gone (see
+    // code-predictor-exec.h). Kept OPT-IN (KALI_QWEN_CP_EXEC=1) until
+    // kali-companion soaks it in production; flip the default then.
     pt->cp_exec_enabled = false;
     {
         const char * exec_env = getenv("KALI_QWEN_CP_EXEC");
         if (exec_env && exec_env[0] && exec_env[0] != '0') {
             if (code_predictor_exec_init(&pt->cp_exec, &pt->code_predictor, &pt->code_predictor_kv, pt->sched,
-                                         pt->talker.hidden_size, pt->use_flash_attn, pt->clamp_fp16)) {
+                                         pt->bp, pt->talker.hidden_size, pt->use_flash_attn, pt->clamp_fp16)) {
                 pt->cp_exec_enabled = true;
                 qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: %zu prebuilt graphs (replay mode, OPT-IN)",
                        pt->cp_exec.steps.size());

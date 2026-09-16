@@ -40,6 +40,9 @@ struct CPExecStep {
     struct ggml_tensor *  x_in    = nullptr;
     struct ggml_tensor *  pos_in  = nullptr;
     struct ggml_tensor *  mask_in = nullptr;
+    // Isolated per-step scheduler: graph allocated once at init, replayed
+    // without reset for the whole process lifetime.
+    ggml_backend_sched_t sched = nullptr;
     int T      = 0;
     int n_past = 0;
     int g_head = 0;
@@ -49,6 +52,11 @@ struct CodePredictorExec {
     const CodePredictorWeights * cw    = nullptr;
     KVCache *                    kv    = nullptr;
     ggml_backend_sched_t         sched = nullptr;
+    // Own scheduler pair: exec graphs are allocated ONCE on isolated
+    // per-step schedulers so pool growth from big talker prefills on the
+    // shared sched can never move/free their buffers (root cause of the
+    // v0.24 segfault on long texts).
+    BackendPair                  bp    = {};
     int  talker_hidden = 0;
     int  vocab         = 0;
     int  n_acoustic    = 0;
@@ -124,12 +132,14 @@ static bool code_predictor_exec_init(CodePredictorExec *          ex,
                                      const CodePredictorWeights * cw,
                                      KVCache *                    kv,
                                      ggml_backend_sched_t         sched,
+                                     BackendPair                  bp,
                                      int                          talker_hidden,
                                      bool                         use_flash_attn,
                                      bool                         clamp_fp16) {
     ex->cw             = cw;
     ex->kv             = kv;
     ex->sched          = sched;
+    ex->bp             = bp;
     ex->talker_hidden  = talker_hidden;
     ex->vocab          = cw->vocab_size;
     ex->n_acoustic     = cw->num_acoustic_codebooks;
@@ -170,10 +180,31 @@ static bool code_predictor_exec_init(CodePredictorExec *          ex,
             }
         }
     }
+
+    // Allocate every graph once on its own isolated scheduler. From here
+    // on each graph is pure replay: no further allocs, no resets, and
+    // buffers cannot be disturbed by talker/predictor pool growth.
+    for (auto & s : ex->steps) {
+        s.sched = backend_sched_new(ex->bp, 4096);
+        if (!s.sched) {
+            goto fail;
+        }
+        ggml_backend_sched_reset(s.sched);
+        if (!ggml_backend_sched_alloc_graph(s.sched, s.gf)) {
+            goto fail;
+        }
+        ggml_backend_tensor_set(s.pos_in, ex->positions[(size_t) s.g_head].data(), 0,
+                                (size_t) s.T * sizeof(int32_t));
+        ggml_backend_tensor_set(s.mask_in, ex->masks[(size_t) s.g_head].data(), 0,
+                                ex->masks[(size_t) s.g_head].size() * sizeof(ggml_fp16_t));
+    }
     return true;
 
 fail:
     for (auto & s : ex->steps) {
+        if (s.sched) {
+            ggml_backend_sched_free(s.sched);
+        }
         if (s.gctx) {
             ggml_free(s.gctx);
         }
@@ -184,6 +215,9 @@ fail:
 
 static void code_predictor_exec_free(CodePredictorExec * ex) {
     for (auto & s : ex->steps) {
+        if (s.sched) {
+            ggml_backend_sched_free(s.sched);
+        }
         if (s.gctx) {
             ggml_free(s.gctx);
         }
@@ -191,36 +225,29 @@ static void code_predictor_exec_free(CodePredictorExec * ex) {
     ex->steps.clear();
 }
 
-// Replay one sub-step graph on the SHARED pipeline scheduler. Each call
-// resets + allocates + uploads positions / mask / input, computes and
-// reads the logits row back.
+// Replay one sub-step graph on its OWN persistent scheduler (allocated
+// once at init). Root causes of the historical failures and their fixes:
 //
-// NOTE (perf lesson): a per-step persistent scheduler (alloc once,
-// replay without reset) was tested and CORRUPTS output deterministically
-// on this ggml pin: its CUDA-graph reuse machinery keys captures on the
-// graph's first-node pointer + uid, which is safe under llama.cpp's
-// rebuild-alloc-compute pattern but produces stale/crossed replays with
-// persistent alloc-once graphs that coexist with the talker's rebuilt
-// graphs. Do not reintroduce without reworking the capture keying.
+// 1. Old ggml pin: output corruption with any persistent graph — its
+//    CUDA-graph reuse keyed captures on the graph's first-node pointer.
+//    Fixed upstream; ggml v0.24 keys captures correctly.
+// 2. ggml v0.24 + graphs allocated on the SHARED scheduler: segfault in
+//    libcuda when a later, larger talker prefill grew the shared pool,
+//    leaving the pre-built graphs' buffers stale. Fixed here by giving
+//    every sub-step its own isolated scheduler: alloc happens once at
+//    init and the shared pool can never move or free those buffers.
+//
+// Validated on v0.24 + driver 595.91 (RTX 3060): mixed-size text
+// sequences, 40+ run soaks, bit-exact vs the legacy rebuild path and
+// fully deterministic under fixed seeds.
 
+// Replay one sub-step graph on its OWN persistent scheduler. The graph
 static bool cp_exec_run_step(CodePredictorExec * ex, CPExecStep * st, const float * input) {
-    ggml_backend_sched_reset(ex->sched);
-    if (!ggml_backend_sched_alloc_graph(ex->sched, st->gf)) {
-        fprintf(stderr, "[CodePredictor] FATAL: graph alloc failed (g=%d)\n", st->g_head);
-        ggml_backend_sched_reset(ex->sched);
-        return false;
-    }
-
     ggml_backend_tensor_set(st->x_in, input, 0,
                             (size_t) st->T * (size_t) ex->talker_hidden * sizeof(float));
-    ggml_backend_tensor_set(st->pos_in, ex->positions[(size_t) st->g_head].data(), 0,
-                            (size_t) st->T * sizeof(int32_t));
-    ggml_backend_tensor_set(st->mask_in, ex->masks[(size_t) st->g_head].data(), 0,
-                            ex->masks[(size_t) st->g_head].size() * sizeof(ggml_fp16_t));
 
-    if (ggml_backend_sched_graph_compute(ex->sched, st->gf) != GGML_STATUS_SUCCESS) {
+    if (ggml_backend_sched_graph_compute(st->sched, st->gf) != GGML_STATUS_SUCCESS) {
         fprintf(stderr, "[CodePredictor] FATAL: graph compute failed (g=%d)\n", st->g_head);
-        ggml_backend_sched_reset(ex->sched);
         return false;
     }
 
@@ -229,7 +256,6 @@ static bool cp_exec_run_step(CodePredictorExec * ex, CPExecStep * st, const floa
                             (size_t)(st->T - 1) * row_bytes, row_bytes);
 
     ex->kv->cur_len = st->n_past + st->T;
-    ggml_backend_sched_reset(ex->sched);
     return true;
 }
 
