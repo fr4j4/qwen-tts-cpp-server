@@ -6,6 +6,7 @@
 
 #include "audio-io.h"
 #include "bpe.h"
+#include "code-predictor-exec.h"
 #include "code-predictor-forward.h"
 #include "codec-chunked-decode.h"
 #include "debug.h"
@@ -216,8 +217,13 @@ bool pipeline_tts_load(PipelineTTS * pt,
     // KV caches: talker holds the LM context up to 4096 positions (the
     // longest ICL prompt observed is ~250 + max_new_tokens ~ 1500, so
     // 4096 has 60% headroom). Predictor holds one frame of 16 sub-steps.
+    // The talker cache runs F16 on the fused flash attention path (FA
+    // consumes K/V in FP16, halving bandwidth and footprint); the
+    // reference F32 chain on CPU and the small predictor cache keep the
+    // bit-exact legacy layout.
+    const bool talker_fa_f16 = pt->use_flash_attn;
     if (!kv_cache_init(&pt->talker_kv, pt->talker.num_hidden_layers, pt->talker.num_key_value_heads,
-                       pt->talker.head_dim, 4096, pt->backend)) {
+                       pt->talker.head_dim, 4096, talker_fa_f16 ? GGML_TYPE_F16 : GGML_TYPE_F32, pt->backend)) {
         ggml_backend_sched_free(pt->sched);
         pt->sched = NULL;
         pipeline_codec_free(&pt->codec);
@@ -231,7 +237,7 @@ bool pipeline_tts_load(PipelineTTS * pt,
     }
     if (!kv_cache_init(&pt->code_predictor_kv, pt->code_predictor.num_hidden_layers,
                        pt->code_predictor.num_key_value_heads, pt->code_predictor.head_dim, pt->num_code_groups,
-                       pt->backend)) {
+                       GGML_TYPE_F32, pt->backend)) {
         kv_cache_free(&pt->talker_kv);
         ggml_backend_sched_free(pt->sched);
         pt->sched = NULL;
@@ -245,16 +251,47 @@ bool pipeline_tts_load(PipelineTTS * pt,
         return false;
     }
 
+    // Pre-build the 15 predictor sub-step graphs. Position tensors and
+    // causal masks are constants of the sub-step, so the graph set is
+    // identical for every frame; replaying them removes the per-call
+    // ggml_init + node build + sched alloc churn of the legacy path.
+    //
+    // DEFAULT OFF (KALI_QWEN_CP_EXEC=1 to enable): under repeated use
+    // the replay path triggers an intermittent segfault inside
+    // libcuda (driver 595.91) on this ggml pin, likely via its CUDA
+    // graph capture/reuse machinery interacting with graph lifetime.
+    // The legacy rebuild path is stable and only ~5% slower; revisit
+    // when the ggml pin is updated.
+    pt->cp_exec_enabled = false;
+    {
+        const char * exec_env = getenv("KALI_QWEN_CP_EXEC");
+        if (exec_env && exec_env[0] && exec_env[0] != '0') {
+            if (code_predictor_exec_init(&pt->cp_exec, &pt->code_predictor, &pt->code_predictor_kv, pt->sched,
+                                         pt->talker.hidden_size, pt->use_flash_attn, pt->clamp_fp16)) {
+                pt->cp_exec_enabled = true;
+                qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: %zu prebuilt graphs (replay mode, OPT-IN)",
+                       pt->cp_exec.steps.size());
+            } else {
+                qt_log(QT_LOG_WARN, "[Pipeline] predictor exec init failed; using legacy per-step graph rebuild");
+            }
+        } else {
+            qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: disabled (legacy rebuild; KALI_QWEN_CP_EXEC=1 to enable)");
+        }
+    }
+
     qt_log(QT_LOG_INFO,
            "[Pipeline] Loaded: arch=%s variant=%s tokenizer=%s codebooks=%d speaker_encoder=%s speakers=%zu fa=%s "
-           "clamp_fp16=%s",
+           "clamp_fp16=%s kv_talker=%s",
            pt->model_size.c_str(), pt->model_type.c_str(), pt->tokenizer_type.c_str(), pt->num_code_groups,
            pt->has_speaker_encoder ? "loaded" : "absent", pt->speakers.size(), pt->use_flash_attn ? "on" : "off",
-           pt->clamp_fp16 ? "on" : "off");
+           pt->clamp_fp16 ? "on" : "off",
+           pt->talker_kv.type == GGML_TYPE_F16 ? "f16" : "f32");
     return true;
 }
 
 void pipeline_tts_free(PipelineTTS * pt) {
+    code_predictor_exec_free(&pt->cp_exec);
+    pt->cp_exec_enabled = false;
     kv_cache_free(&pt->code_predictor_kv);
     kv_cache_free(&pt->talker_kv);
     if (pt->sched) {
@@ -636,9 +673,18 @@ qt_status pipeline_tts_synthesize(PipelineTTS *                pt,
         CodePredictorOutput cp;
         const char *        cp_dump = (params->dump_dir && step == 0) ? params->dump_dir : NULL;
         Timer               t_pred;
-        if (!code_predictor_step(&pt->talker, &pt->code_predictor, &pt->code_predictor_kv, pt->sched,
-                                 fw.hidden_last.data(), c0, subtk_T, params->subtalker_top_k, params->subtalker_top_p,
-                                 resolved_seed, subseq_counter - 1, use_fa, clamp_fp16, cp_dump, &cp)) {
+        bool                cp_ok;
+        if (pt->cp_exec_enabled) {
+            cp_ok = code_predictor_exec_frame(&pt->cp_exec, &pt->talker, fw.hidden_last.data(), c0, subtk_T,
+                                              params->subtalker_top_k, params->subtalker_top_p, resolved_seed,
+                                              subseq_counter - 1, cp_dump, &cp);
+        } else {
+            cp_ok = code_predictor_step(&pt->talker, &pt->code_predictor, &pt->code_predictor_kv, pt->sched,
+                                        fw.hidden_last.data(), c0, subtk_T, params->subtalker_top_k,
+                                        params->subtalker_top_p, resolved_seed, subseq_counter - 1, use_fa,
+                                        clamp_fp16, cp_dump, &cp);
+        }
+        if (!cp_ok) {
             return QT_STATUS_GENERATE_FAILED;
         }
         perf.predictor_ms += t_pred.ms();
