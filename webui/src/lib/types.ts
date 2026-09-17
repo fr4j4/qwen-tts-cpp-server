@@ -8,6 +8,8 @@ export interface TtsSettings {
   speaker: string // CustomVoice only
   seed: string // '' = random
   instruct: string // VoiceDesign only
+  /** 'stable' = play whole wav via <audio> when stream ends; 'live' = Web Audio buffer-first */
+  playback: 'live' | 'stable'
 }
 
 export interface LlmSettings {
@@ -29,11 +31,11 @@ export interface StageTiming {
 }
 
 export interface SynthEvent {
-  kind: 'frame' | 'chunk' | 'end' | 'error'
-  /** cumulative pcm frames (1 frame = 1/100 s) or bytes for chunk */
-  count: number
-  ms?: number
-  text?: string
+  kind: 'pcm' | 'end' | 'error'
+  /** PCM s16le bytes for kind 'pcm' */
+  bytes?: Uint8Array
+  /** cumulative samples for kind 'end' */
+  count?: number
   error?: string
 }
 
@@ -47,6 +49,8 @@ export interface UiState {
   synthText: string // text actually sent to TTS
   frames: number
   timing: StageTiming[]
+  ttfaMs: number | null // ms from TTS start to first audio
+  totalMs: number | null // ms from TTS start to end of stream
   error: string | null
 }
 

@@ -8,10 +8,13 @@ import VoiceDesignPanel from './modes/VoiceDesignPanel'
 import CustomVoicePanel from './modes/CustomVoicePanel'
 import { streamChat } from './lib/llmApi'
 import { streamTts } from './lib/ttsApi'
-import { PcmPlayer } from './lib/pcmPlayer'
+import { PcmPlayer, MIN_START_SAMPLES } from './lib/pcmPlayer'
+import { LivePcm } from './lib/livePcm'
 import { loadLlm, loadTts, saveLlm, saveTts } from './lib/storage'
 import type { LlmSettings, Mode, TtsSettings, UiState } from './lib/types'
 import { SAMPLE_TEXTS } from './lib/types'
+
+const SAMPLE_RATE = 24000
 
 const initialTts: TtsSettings = {
   mode: 'voicedesign',
@@ -19,6 +22,7 @@ const initialTts: TtsSettings = {
   speaker: 'serena',
   seed: '',
   instruct: 'Natural y tranquila',
+  playback: 'live',
 }
 
 const initialLlm: LlmSettings = {
@@ -40,6 +44,8 @@ const initialUi: UiState = {
   synthText: '',
   frames: 0,
   timing: [],
+  ttfaMs: null,
+  totalMs: null,
   error: null,
 }
 
@@ -50,7 +56,7 @@ type UiAction =
   | { type: 'llm_done' }
   | { type: 'tts_start'; text: string }
   | { type: 'audio_tick'; frames: number }
-  | { type: 'finish' }
+  | { type: 'finish'; totalMs: number }
   | { type: 'fail'; error: string }
 
 function reducer(s: UiState, a: UiAction): UiState {
@@ -76,13 +82,15 @@ function reducer(s: UiState, a: UiAction): UiState {
       }
     case 'audio_tick': {
       let timing = s.timing
+      let ttfa = s.ttfaMs
       if (s.stage !== 'audio') {
         timing = [...s.timing, { stage: 'audio', at: performance.now(), detail: 'primer chunk PCM' }]
+        ttfa = Math.round(performance.now() - (timing.find((t) => t.stage === 'tts')?.at ?? performance.now()))
       }
-      return { ...s, stage: 'audio', frames: a.frames, timing }
+      return { ...s, stage: 'audio', frames: a.frames, timing, ttfaMs: ttfa }
     }
     case 'finish':
-      return { ...s, phase: 'done', stage: 'audio' }
+      return { ...s, phase: 'done', stage: 'audio', totalMs: a.totalMs }
     case 'fail':
       return { ...s, phase: 'error', stage: 'idle', error: a.error }
     default:
@@ -91,15 +99,26 @@ function reducer(s: UiState, a: UiAction): UiState {
 }
 
 export default function App() {
-  const [tts, setTts] = useState<TtsSettings>(() =>
-    loadTts({ ...initialTts })
-  )
+  const [tts, setTts] = useState<TtsSettings>(() => {
+    const loaded = loadTts({ ...initialTts })
+    // Migración one-time: 'stable' se repartió como default durante el
+    // workaround del ruido (causa real: desalineación PCM, ya arreglada).
+    // El realtime es el comportamiento intended — se restaura una vez.
+    const anyLoaded = loaded as TtsSettings & { migratedLive?: boolean }
+    if (!anyLoaded.migratedLive) {
+      anyLoaded.playback = 'live'
+      anyLoaded.migratedLive = true
+    }
+    return anyLoaded
+  })
   const [llm, setLlm] = useState<LlmSettings>(() => loadLlm({ ...initialLlm }))
   const [text, setText] = useState(SAMPLE_TEXTS[0])
   const [ui, dispatch] = useReducer(reducer, initialUi)
 
   const abortRef = useRef<AbortController | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
   const pcmRef = useRef<Uint8Array>(new Uint8Array(0))
+  const livePcmRef = useRef<LivePcm>(new LivePcm())
   const playerRef = useRef<PcmPlayer | null>(null)
   const [playing, setPlaying] = useState(false)
   const [wavUrl, setWavUrl] = useState<string | null>(null)
@@ -118,6 +137,7 @@ export default function App() {
     setPlaying(false)
     setWavUrl(null)
     pcmRef.current = new Uint8Array(0)
+    livePcmRef.current.reset()
     setPcmDuration(0)
     dispatch({ type: 'start' })
 
@@ -145,6 +165,18 @@ export default function App() {
       }
 
       dispatch({ type: 'tts_start', text: final })
+      const ttsT0 = performance.now()
+
+      // Two playback paths:
+      //  - 'live':  Web Audio buffer-first (starts at ~2.5 s buffered;
+      //             experimental — degrades on some Linux/Pulse setups)
+      //  - 'stable': no Web Audio at all; when the stream ends, the same
+      //             wav the download serves is played via a native
+      //             <audio> element (the path already proven clean).
+      const stable = tts.playback !== 'live'
+      const player = stable ? null : new PcmPlayer()
+      if (player) playerRef.current = player
+      let lastUi = 0
 
       const result = await streamTts(final, {
         mode: tts.mode,
@@ -154,29 +186,50 @@ export default function App() {
         upstream: tts.url,
         signal: ctrl.signal,
         onEvent: (e) => {
-          if (e.kind === 'frame') {
-            dispatch({ type: 'audio_tick', frames: e.count })
+          if (e.kind === 'pcm' && e.bytes) {
+            player?.push(e.bytes)
+            // Waveform fluida: append O(n) al buffer vivo (sin copias ni
+            // re-renders); el canvas se redibuja solo a 60 fps vía rAF.
+            livePcmRef.current.append(e.bytes)
+            // Start once the first ~1 s of audio are buffered.
+            if (player && !player.isStarted && (e.count ?? 0) >= MIN_START_SAMPLES) {
+              player.start()
+            }
+            const now = performance.now()
+            if (now - lastUi > 200 || lastUi === 0) {
+              lastUi = now
+              if (!stable) setPlaying(true)
+              dispatch({ type: 'audio_tick', frames: e.count ?? 0 })
+            }
           } else if (e.kind === 'error' && e.error) {
             dispatch({ type: 'fail', error: e.error })
           }
         },
       })
-      pcmRef.current = result.pcmBytes
-      setPcmDuration(result.frames / 100)
-      setWavUrl(result.wavUrl)
-      dispatch({ type: 'finish' })
 
-      // Playback: feed the player progressively (real-time feel).
-      const player = new PcmPlayer()
-      playerRef.current = player
-      player.setOnEnded(() => setPlaying(false))
-      // Replay from the accumulated buffer.
-      const chunk = 4096
-      for (let i = 0; i < result.pcmBytes.length; i += chunk) {
-        player.push(result.pcmBytes.slice(i, i + chunk))
+      player?.markEnded() // drains whatever accumulated below 2.5 s
+      player?.setOnEnded(() => setPlaying(false))
+      pcmRef.current = result.pcmBytes
+      setPcmDuration(result.samples / SAMPLE_RATE)
+      setWavUrl(result.wavUrl)
+      dispatch({ type: 'finish', totalMs: Math.round(performance.now() - ttsT0) })
+
+      if (stable) {
+        // Proven path: native <audio> on the finished wav blob.
+        const audio = audioRef.current
+        if (audio) {
+          audio.src = result.wavUrl
+          try {
+            await audio.play()
+            setPlaying(true)
+            audio.onended = () => setPlaying(false)
+          } catch {
+            /* autoplay block: user presses Reproducir */
+          }
+        }
+      } else if (result.samples > 0 && !player!.hasWebAudio) {
+        setPlaying(true)
       }
-      player.markEnded()
-      setPlaying(true)
     } catch (e) {
       if (!ctrl.signal.aborted) {
         dispatch({ type: 'fail', error: (e as Error).message || String(e) })
@@ -184,16 +237,29 @@ export default function App() {
         dispatch({ type: 'reset' })
       }
     }
-  }, [text, tts.mode, tts.speaker, tts.seed, ui.phase])
+  }, [text, tts.mode, tts.speaker, tts.instruct, tts.seed, tts.url, tts.playback, ui.phase])
 
   const stop = useCallback(() => {
     abortRef.current?.abort()
     playerRef.current?.stop()
+    audioRef.current?.pause()
     setPlaying(false)
+    pcmRef.current = new Uint8Array(0)
+    livePcmRef.current.reset()
+    setPcmDuration(0)
     dispatch({ type: 'reset' })
   }, [])
 
-  const setMode = (m: Mode) => setTts((p) => ({ ...p, mode: m }))
+  const setMode = (m: Mode) =>
+    setTts((p) => {
+      // Auto-swap the upstream when toggling modes on the default ports
+      // (1.7B VoiceDesign :8898 <-> 0.6B CustomVoice :8870). Custom URLs
+      // are left untouched.
+      let url = p.url
+      if (m === 'customvoice' && /:8898($|\/)/.test(url)) url = 'http://127.0.0.1:8870'
+      else if (m === 'voicedesign' && /:8870($|\/)/.test(url)) url = 'http://127.0.0.1:8898'
+      return { ...p, mode: m, url }
+    })
 
   const modeProps = {
     tts,
@@ -203,6 +269,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <audio ref={audioRef} style={{ display: 'none' }} />
       <Header healthUrl={tts.url} />
       <div className="layout">
         <aside className="side">
@@ -259,7 +326,7 @@ export default function App() {
         </aside>
 
         <main className="main">
-          <StageTimeline timing={ui.timing} stage={ui.stage} llmEnabled={llm.enabled} />
+          <StageTimeline timing={ui.timing} stage={ui.stage} llmEnabled={llm.enabled} ttfaMs={ui.ttfaMs} totalMs={ui.totalMs} />
           {ui.error && <div className="alert error">{ui.error}</div>}
           {llm.enabled && (ui.llmText || ui.phase !== 'idle') && (
             <div className="panel llm-out">
@@ -281,7 +348,7 @@ export default function App() {
           </div>
           {ui.frames > 0 && (
             <div className="panel">
-              <Waveform pcm={pcmRef.current} />
+              <Waveform liveBuffer={livePcmRef.current} pcm={ui.phase === 'done' ? pcmRef.current : undefined} />
             </div>
           )}
           <AudioControls
@@ -289,7 +356,19 @@ export default function App() {
             setPlaying={setPlaying}
             wavUrl={wavUrl}
             frames={ui.frames}
-            onStop={() => playerRef.current?.stop()}
+            onStop={() => {
+              playerRef.current?.stop()
+              audioRef.current?.pause()
+              setPlaying(false)
+            }}
+            onPauseToggle={() => {
+              const a = audioRef.current
+              if (tts.playback !== 'live' && a && a.src) {
+                if (a.paused) void a.play()
+                else a.pause()
+              } else if (playing) playerRef.current?.pause()
+              else playerRef.current?.resume()
+            }}
           />
         </main>
       </div>

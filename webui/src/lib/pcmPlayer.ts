@@ -1,23 +1,41 @@
-// Web Audio PCM player: plays s16le 24 kHz mono chunks as they arrive
-// (real-time streaming). Falls back to buffered playback if AudioContext
-// is unavailable.
+// Web Audio PCM player — BUFFER-FIRST playback for s16le 24 kHz mono.
+//
+// Why buffer-first: with a fast generator (RTF ~0.18, audio arrives ~5x
+// real-time) fine-grained streaming playback creates dozens of
+// AudioBufferSourceNodes with per-source resamplers; the audio thread
+// overloads and the tail of the stream collapses into noise, while the
+// exact same bytes saved to a .wav play perfectly. So this player:
+//   1. Accumulates chunks (zero playback) until it holds MIN_START_SECONDS
+//      of audio — or the stream ends, whichever comes first.
+//   2. Starts with a single big source; later arrivals are appended in
+//      MAX_SOURCE_SECONDS blocks scheduled contiguously (no gaps, no
+//      pile-up: a block starts exactly when the previous ends).
+//   3. The AudioContext is created at 24000 Hz → no per-source resampler
+//      even when the device mixes at 44.1/48 kHz.
 
 const SAMPLE_RATE = 24000
 
+/** Minimum buffered audio (samples) before playback starts (1 s). */
+export const MIN_START_SAMPLES = 24000
+
+/** Max samples per scheduled source (10 s). */
+const MAX_SOURCE_SAMPLES = 24000 * 10
+
 export class PcmPlayer {
   private ctx: AudioContext | null = null
-  private buf: Float32Array = new Float32Array(0)
-  private playing = false
-  private queue: Float32Array<ArrayBuffer>[] = []
+  private pending: Float32Array = new Float32Array(0)
+  private nextTime = 0
+  private started = false
   private ended = false
+  private lastSource: AudioBufferSourceNode | null = null
   private onended: (() => void) | null = null
-
-  get endedFlag() {
-    return this.ended
-  }
 
   setOnEnded(fn: (() => void) | null) {
     this.onended = fn
+  }
+
+  get isStarted() {
+    return this.started
   }
 
   private ensureCtx(): AudioContext | null {
@@ -26,58 +44,77 @@ export class PcmPlayer {
       window.AudioContext ||
       (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
     if (!AC) return null
-    this.ctx = new AC()
+    try {
+      this.ctx = new AC({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' })
+    } catch {
+      this.ctx = new AC()
+    }
     return this.ctx
   }
 
-  /** Feed raw little-endian s16 PCM bytes. */
+  /** Feed raw little-endian s16 PCM bytes. Accumulates until start(). */
   push(pcm: ArrayBuffer | Uint8Array) {
     const bytes = pcm instanceof Uint8Array ? pcm : new Uint8Array(pcm)
     const n = Math.floor(bytes.length / 2)
+    if (n === 0) return
     const f = new Float32Array(n)
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.length)
-    for (let i = 0; i < n; i++) {
-      f[i] = dv.getInt16(i * 2, true) / 32768
-    }
-    this.queue.push(f)
-    this.maybeStart()
-  }
+    for (let i = 0; i < n; i++) f[i] = dv.getInt16(i * 2, true) / 32768
 
-  private maybeStart() {
-    if (this.playing || this.queue.length === 0) return
+    this.pending = this.concat(this.pending, f)
     const ctx = this.ensureCtx()
-    if (!ctx) {
-      // No Web Audio: accumulate into a flat buffer for later play.
-      this.buf = this.concat(this.buf, this.queue.shift()!)
-      return
-    }
-    this.playing = true
+    if (!ctx) return
     if (ctx.state === 'suspended') void ctx.resume()
-    this.pump(ctx)
+    // Started already? schedule the next block(s) as data arrives —
+    // otherwise playback stalls after the first MAX_SOURCE_SAMPLES.
+    if (this.started) {
+      this.scheduleBlock(ctx, MAX_SOURCE_SAMPLES)
+    }
   }
 
-  private pump(ctx: AudioContext) {
-    const src = ctx.createBufferSource()
-    const chunk: Float32Array<ArrayBuffer> = this.queue.shift() ?? new Float32Array(0)
-    if (chunk.length > 0) {
-      const ab = ctx.createBuffer(1, chunk.length, SAMPLE_RATE)
-      ab.copyToChannel(chunk, 0)
+  /**
+   * Start playback with everything buffered so far (no-op if already
+   * started). Call when MIN_START_SAMPLES is reached, or on stream end —
+   * whichever comes first. Subsequent pushes are scheduled automatically
+   * in MAX_SOURCE_SAMPLES blocks right after the previous ones.
+   */
+  start() {
+    if (this.started) return
+    const ctx = this.ensureCtx()
+    if (!ctx || this.pending.length === 0) return
+    this.started = true
+    this.nextTime = ctx.currentTime + 0.08
+    this.scheduleBlock(ctx, MAX_SOURCE_SAMPLES)
+  }
+
+  private scheduleBlock(ctx: AudioContext, maxSamples: number) {
+    const now = ctx.currentTime
+    // Never schedule into the past — sources firing late pile up and sum.
+    if (this.nextTime < now) this.nextTime = now + 0.03
+
+    while (this.pending.length > 0) {
+      const take = Math.min(this.pending.length, maxSamples)
+      const f = this.pending.slice(0, take)
+      this.pending = this.pending.slice(take)
+      if (f.length === 0) break
+
+      const src = ctx.createBufferSource()
+      this.lastSource = src
+      const ab = ctx.createBuffer(1, f.length, SAMPLE_RATE)
+      ab.copyToChannel(f as Float32Array<ArrayBuffer>, 0)
       src.buffer = ab
-    }
-    src.connect(ctx.destination)
-    src.onended = () => {
-      src.disconnect()
-      if (this.queue.length > 0) {
-        this.pump(ctx)
-      } else if (this.ended) {
-        this.playing = false
-        this.onended?.()
-      } else {
-        this.playing = false
+      src.connect(ctx.destination)
+      src.start(this.nextTime)
+      this.nextTime += f.length / SAMPLE_RATE
+
+      src.onended = () => {
+        src.disconnect()
+        if (src === this.lastSource && this.ended && this.pending.length === 0) {
+          this.started = false
+          this.onended?.()
+        }
       }
     }
-    const t = ctx.currentTime + 0.01
-    src.start(t)
   }
 
   private concat(a: Float32Array, b: Float32Array): Float32Array {
@@ -87,20 +124,25 @@ export class PcmPlayer {
     return r
   }
 
+  /** Stream finished: flush what remains and arm the ended callback. */
   markEnded() {
     this.ended = true
-    if (!this.playing && this.queue.length === 0 && this.ctx) {
+    const ctx = this.ensureCtx()
+    if (ctx) {
+      if (!this.started) this.start()
+      else this.scheduleBlock(ctx, MAX_SOURCE_SAMPLES) // drain anything left
+    }
+    if (!this.started) {
       this.onended?.()
     }
   }
 
-  /** Full buffered audio (only when Web Audio fell back). */
-  buffered(): Float32Array {
-    return this.buf
+  pause() {
+    void this.ctx?.suspend()
   }
 
-  get hasWebAudio() {
-    return !!this.ctx
+  resume() {
+    void this.ctx?.resume()
   }
 
   stop() {
@@ -110,8 +152,18 @@ export class PcmPlayer {
       /* ignore */
     }
     this.ctx = null
-    this.playing = false
-    this.queue = []
+    this.pending = new Float32Array(0)
+    this.nextTime = 0
+    this.started = false
     this.ended = false
+    this.lastSource = null
+  }
+
+  buffered(): Float32Array {
+    return this.pending
+  }
+
+  get hasWebAudio() {
+    return !!this.ctx
   }
 }

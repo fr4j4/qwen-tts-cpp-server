@@ -1,7 +1,21 @@
-// OpenAI-compatible chat streaming (SSE) via the same-origin proxy.
-// Tries /v1/chat/completions first; falls back to /v1/completions
-// automatically (llama.cpp servers commonly expose only "completion").
-// Both are streamed token-by-token.
+/** Converts a user-supplied base URL into the absolute chat endpoint. */
+function buildChatUrl(base: string): string {
+  let b = base.trim().replace(/\/+$/, '')
+  if (!b) return ''
+  // URL completa del endpoint (ej. Z.AI docs: https://api.z.ai/api/paas/v4/chat/completions)
+  if (/\/chat\/completions$/.test(b) || /\/completions$/.test(b)) return b
+  // Estilo OpenAI: base termina en /v1 -> /v1/chat/completions
+  if (/\/v\d+$/.test(b)) return b + '/chat/completions'
+  // Z.AI: base termina en /paas/v4 -> /paas/v4/chat/completions
+  if (/\/paas\/v\d+$/.test(b)) return b + '/chat/completions'
+  // base plana (host raíz): convención OpenAI
+  return b + '/v1/chat/completions'
+}
+
+function buildCompletionUrl(base: string): string {
+  const chat = buildChatUrl(base)
+  return chat.replace(/\/chat\/completions$/, '/completions')
+}
 import type { LlmSettings } from './types'
 
 export interface LlmDelta {
@@ -35,7 +49,7 @@ async function postStream(
 }
 
 function chatBody(settings: LlmSettings, prompt: string) {
-  return {
+  const body: Record<string, unknown> = {
     model: settings.model,
     messages: [
       { role: 'system', content: settings.systemPrompt },
@@ -45,6 +59,13 @@ function chatBody(settings: LlmSettings, prompt: string) {
     temperature: settings.temperature,
     stream: true,
   }
+  // GLM 4.5+ piensa por defecto (thinking ON): el bloque de razonamiento
+  // puede filtrarse al texto que después lee el TTS (estáticos/símbolos).
+  // Como hace Hermes (plugins/model-providers/zai): thinking OFF.
+  if (/^glm-([4-9]\.\d+|[5-9])/i.test(settings.model)) {
+    body.extra_body = { thinking: { type: 'disabled' } }
+  }
+  return body
 }
 
 function completionBody(settings: LlmSettings, prompt: string) {
@@ -67,13 +88,15 @@ function parseSseLine(line: string, isChat: boolean): { text: string; done: bool
   try {
     const j = JSON.parse(payload)
     if (isChat) {
-      const text = j.choices?.[0]?.delta?.content as string | undefined
+      // GLM thinking: el razonamiento llega en reasoning_content — se
+      // ignora (NUNCA alimentar el TTS con símbolos de razonamiento).
+      const text = (j.choices?.[0]?.delta?.content as string | undefined) ?? ''
       const fin = j.choices?.[0]?.finish_reason as string | undefined
-      return { text: text ?? '', done: !!fin }
+      return { text, done: !!fin }
     }
-    const text = j.choices?.[0]?.text as string | undefined
+    const text = (j.choices?.[0]?.text as string | undefined) ?? ''
     const fin = j.choices?.[0]?.finish_reason as string | undefined
-    return { text: text ?? '', done: !!fin }
+    return { text, done: !!fin }
   } catch {
     return null
   }
@@ -87,26 +110,29 @@ export async function* streamChat(
 ): AsyncGenerator<LlmDelta, void, unknown> {
   const ctrl = new AbortController()
   onSignal?.(ctrl.signal)
-  // Normalise: OpenAI-compatible bases usually end in /v1; the client
-  // paths below are relative (/chat/completions), so ensure /v1 once.
-  let target = settings.baseUrl.replace(/\/+$/, '')
-  if (!/\/v1$/.test(target)) target += '/v1'
   const enc = encodeURIComponent
   const headers: Record<string, string> = {
     'content-type': 'application/json',
+    'accept-language': 'en-US,en', // Z.AI lo recomienda explícitamente
     ...(settings.apiKey ? { authorization: `Bearer ${settings.apiKey}` } : {}),
   }
 
-  const chatUrl = `/proxy/llm/chat/completions?target=${enc(target)}`
+  // The proxy forwards to an absolute URL via ?target= ; llmApi builds
+  // the full endpoint from the base (handles /v1, /paas/v4, or a full
+  // /chat/completions URL pasted from vendor docs).
+  const chatTarget = buildChatUrl(settings.baseUrl)
+  if (!chatTarget) throw new Error('LLM: endpoint base vacío')
+  const chatUrl = `/proxy/llm?target=${enc(chatTarget)}`
   const tryChat = await postStream(chatUrl, headers, JSON.stringify(chatBody(settings, prompt)), ctrl.signal)
 
   let res: StreamResult
   let isChat = true
   if (tryChat.ok) {
     res = tryChat
-  } else if (tryChat.status === 404 || tryChat.status === 400) {
-    // 404: endpoint not exposed; 400: model rejects chat format.
-    const compUrl = `/proxy/llm/completions?target=${enc(target)}`
+  } else if (tryChat.status === 404 || tryChat.status === 400 || tryChat.status === 401) {
+    // 404: endpoint not exposed; 400: model rejects chat format;
+    // 401/403: auth may pass on the alternative endpoint.
+    const compUrl = `/proxy/llm?target=${enc(buildCompletionUrl(settings.baseUrl))}`
     res = await postStream(compUrl, headers, JSON.stringify(completionBody(settings, prompt)), ctrl.signal)
     isChat = false
   } else {

@@ -70,20 +70,17 @@ export function proxyHandler(req, res, ttsUpstream) {
       .replace(/^\/proxy\/health/, '/health') + parsed.search
     return forward(req, res, upstream.replace(/\/+$/, '') + rest)
   }
-  if (u.startsWith('/proxy/llm/')) {
-    // ?target=<openai-compatible base, may include /v1> ; path after
-    // /proxy/llm is the API path WITHOUT /v1 (e.g. /chat/completions).
-    // llmApi normalises the base so /v1 appears exactly once upstream.
+  if (u.startsWith('/proxy/llm')) {
+    // ?target=<endpoint URL absoluto> (llmApi construye la URL completa:
+    // https://api.z.ai/api/paas/v4/chat/completions o /v1/chat/completions).
     const parsed = new URL(u, 'http://local')
     const target = parsed.searchParams.get('target')
-    parsed.searchParams.delete('target')
-    const rest = (parsed.pathname || '').replace(/^\/proxy\/llm/, '') + parsed.search
     if (!target) {
       res.writeHead(400, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ error: { message: 'missing ?target= LLM base URL' } }))
+      res.end(JSON.stringify({ error: { message: 'missing ?target= LLM endpoint URL' } }))
       return
     }
-    return forward(req, res, target.replace(/\/+$/, '') + rest)
+    return forward(req, res, target)
   }
   res.writeHead(404, { 'content-type': 'application/json' })
   res.end(JSON.stringify({ error: { message: 'not found' } }))

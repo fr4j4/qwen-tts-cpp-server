@@ -27,6 +27,27 @@ export default function SettingsPanel({ llm, setLlm, tts, setTts }: Props) {
 
       <div className="settings-block">
         <div className="block-head">
+          <span>🔊 Reproducción</span>
+        </div>
+        <label className="s">
+          Modo
+          <select
+            value={tts.playback ?? 'stable'}
+            onChange={(e) => setTts({ ...tts, playback: e.target.value as 'live' | 'stable' })}
+          >
+            <option value="stable">Estable — al terminar el stream (recomendado)</option>
+            <option value="live">En vivo — Web Audio (experimental)</option>
+          </select>
+        </label>
+        <p className="hint">
+          <b>Estable</b> usa el mismo reproductor nativo que la descarga (audio limpio garantizado; empieza cuando
+          termina el stream). <b>En vivo</b> arranca a los ~2.5 s de audio bufferizado, pero puede degradar según el
+          hardware/OS.
+        </p>
+      </div>
+
+      <div className="settings-block">
+        <div className="block-head">
           <span>🤖 LLM (OpenAI-compatible)</span>
           <label className="switch">
             <input
@@ -44,11 +65,11 @@ export default function SettingsPanel({ llm, setLlm, tts, setTts }: Props) {
               <input
                 value={llm.baseUrl}
                 onChange={(e) => u({ baseUrl: e.target.value })}
-                placeholder="http://127.0.0.1:8081/v1"
+                placeholder="https://api.z.ai/api/paas/v4 o http://127.0.0.1:8081/v1"
               />
             </label>
             <label className="s">
-              API key (opcional)
+              API key (Z.AI: la de console.z.ai)
               <input
                 type="password"
                 value={llm.apiKey}
@@ -61,7 +82,7 @@ export default function SettingsPanel({ llm, setLlm, tts, setTts }: Props) {
               <input
                 value={llm.model}
                 onChange={(e) => u({ model: e.target.value })}
-                placeholder="qwen2.5-7b-instruct"
+                placeholder="glm-5.3-flash (Z.AI) o qwen2.5-7b-instruct"
               />
             </label>
             <label className="s">

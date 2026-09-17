@@ -523,6 +523,46 @@ button.ghost:disabled {
   display: block;
 }
 
+/* ---------- real-time metrics ---------- */
+.rt-metrics {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.metric-label {
+  color: var(--muted);
+}
+
+.metric-value {
+  font-weight: 700;
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+}
+
+.metric.ok {
+  border-color: rgba(52, 211, 153, 0.5);
+  color: var(--green);
+}
+
+.metric.warn {
+  border-color: rgba(251, 191, 36, 0.5);
+  color: var(--amber);
+}
+
 /* ---------- audio controls ---------- */
 .audio-controls {
   display: flex;

@@ -4,9 +4,11 @@ interface Props {
   wavUrl: string | null
   frames: number
   onStop: () => void
+  /** Web Audio: pause/resume the live player */
+  onPauseToggle: () => void
 }
 
-export default function AudioControls({ playing, setPlaying, wavUrl, frames, onStop }: Props) {
+export default function AudioControls({ playing, setPlaying, wavUrl, frames, onStop, onPauseToggle }: Props) {
   if (frames === 0) {
     return (
       <div className="audio-controls idle">
@@ -18,7 +20,10 @@ export default function AudioControls({ playing, setPlaying, wavUrl, frames, onS
     <div className="audio-controls">
       <button
         className={'primary' + (playing ? ' dim' : '')}
-        onClick={() => setPlaying(!playing)}
+        onClick={() => {
+          onPauseToggle()
+          setPlaying(!playing)
+        }}
         disabled={!wavUrl && !playing}
       >
         {playing ? '⏸ Pausar' : '▶ Reproducir'}
