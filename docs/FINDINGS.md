@@ -183,10 +183,22 @@ Los execs quedaron **ON por defecto** (opt-out) tras validar la campaña: si fal
 
 1. **Root cause del NaN en 0.6B** (§2 Bug 3) — desbloquearía CP_EXEC
    universal (RTF ~0.15 en 0.6B también).
-2. **Captura CUDA-graph del talker**: los graphs automáticos no agarran
-   el grafo de decode (5.2 → 4.58 vino solo del pre-build; el launch
-   overhead sigue). Investigar qué nodo bloquea (¿set_rows? ¿FA?).
-   Potencial: talker ~1.5-2 ms/f → RTF global ~0.12-0.13.
+2. **Talker decode (4.6 ms/f) — cuello en kernels, NO en launches** (corregido
+   2026-09-17, rama `exp/tx-graph-capture`): la hipótesis anterior de
+   "3 ms de launch overhead" fue REFUTADA con datos. Con
+   `GGML_CUDA_GRAPHS=ON` el grafo del talker (1,472 nodos) SÍ se captura
+   (id 34, 1 reuse/frame verificado en logs) y el TalkerDecode sigue en
+   4.58-5.03 ms/f. La GPU está al 92-100% SM durante el decode → los
+   kernels consumen todo: fattn sobre ventana W=2048 creciente +
+   mul_mats T=1 memory-bound (re-lee ~1 GB de pesos por frame).
+   Microbench de referencia: 1,400 launches = 2.96 ms vs 1 graph
+   launch = 0.78 ms (el ahorro existe pero no hay gaps que aprovechar).
+   GOTCHA de build: cmake a secas sobre build-cuda resetea
+   GGML_CUDA_GRAPHS a OFF silenciosamente — verificar el CMakeCache tras
+   cada reconfiguración (este flag ON dio -10% RTF global vía los 15
+   grafos del CodePredictor, que sí lo aprovechan).
+   Siguiente palanca real: optimización algorítmica (ventana de atención
+   acotada / poda de KV, batch de frames), no de infraestructura.
 3. **OOM → HTTP 503** (§2 Bug 4).
 4. Soak producción → monitorizar execs en producción (defaults ya volteados a ON; el soak ES producción).
 5. Warmup en el provider Python (esconde ~2.3 s de CUDA init) y
