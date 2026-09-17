@@ -199,6 +199,15 @@ Los execs quedaron **ON por defecto** (opt-out) tras validar la campaña: si fal
    grafos del CodePredictor, que sí lo aprovechan).
    Siguiente palanca real: optimización algorítmica (ventana de atención
    acotada / poda de KV, batch de frames), no de infraestructura.
+   ✅ **IMPLEMENTADO** (rama `exp/tx-sliding-window`, 2026-09-17): buffer
+   circular KV en el talker exec (`setidx = n_past % W`, máscara
+   post-wrap all-zeros — RoPE absoluto horneado en cada K cacheado hace
+   el orden físico irrelevante). W default 2048 → **512** (~41 s de
+   contexto). Medido: TalkerDecode 4.63 → **4.06-4.11 ms/f (-12%)**,
+   techo de frames eliminado (nunca más fallback legacy a mitad de
+   generación), determinismo md5 estable, wrap cruzado en vivo sin
+   crash. **A/B por oído aprobado** (mismo texto/seed: indistinguible
+   para el evaluador humano). RTF global ~0.154.
 3. **OOM → HTTP 503** (§2 Bug 4).
 4. Soak producción → monitorizar execs en producción (defaults ya volteados a ON; el soak ES producción).
 5. Warmup en el provider Python (esconde ~2.3 s de CUDA init) y
