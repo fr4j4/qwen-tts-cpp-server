@@ -265,7 +265,14 @@ bool pipeline_tts_load(PipelineTTS * pt,
     pt->cp_exec_enabled = false;
     {
         const char * exec_env = getenv("KALI_QWEN_CP_EXEC");
-        if (exec_env && exec_env[0] && exec_env[0] != '0') {
+        // Gate por geometria: el exec solo esta validado con predictors
+        // de proyeccion mtp linear (familia 1.7B VoiceDesign). En el
+        // 0.6B CustomVoice (mtp_proj identity) el replay corrompe los
+        // logits del predictor desde la 2da sintesis del proceso
+        // (NaNs deterministas; misma uniforme de Philox => codes 2047,
+        // sin EOS). Legacy rebuild en 0.6B: RTF 0.184, estable.
+        const bool mtp_linear = (pt->code_predictor.mtp_proj_w != NULL);
+        if (exec_env && exec_env[0] && exec_env[0] != '0' && pt->use_flash_attn && mtp_linear) {
             if (code_predictor_exec_init(&pt->cp_exec, &pt->code_predictor, &pt->code_predictor_kv, pt->sched,
                                          pt->bp, pt->talker.hidden_size, pt->use_flash_attn, pt->clamp_fp16)) {
                 pt->cp_exec_enabled = true;
@@ -274,6 +281,9 @@ bool pipeline_tts_load(PipelineTTS * pt,
             } else {
                 qt_log(QT_LOG_WARN, "[Pipeline] predictor exec init failed; using legacy per-step graph rebuild");
             }
+        } else if (exec_env && exec_env[0] && exec_env[0] != '0' && !mtp_linear) {
+            qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: unsupported geometry (mtp identity, 0.6B family); "
+                                "using legacy rebuild");
         } else {
             qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: disabled (legacy rebuild; KALI_QWEN_CP_EXEC=1 to enable)");
         }
