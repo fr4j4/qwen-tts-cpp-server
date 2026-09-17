@@ -19,6 +19,7 @@
 #include "pipeline-codec.h"
 #include "qwen.h"
 #include "speaker-encoder-weights.h"
+#include "talker-exec.h"
 #include "talker-weights.h"
 
 #include <cstdint>
@@ -133,6 +134,14 @@ struct PipelineTTS {
     // (init failure or KALI_QWEN_CP_LEGACY=1).
     bool                 cp_exec_enabled = false;
     CodePredictorExec    cp_exec;
+
+    // Pre-built replayable decode graph for the Talker (one token per
+    // step, fixed KV window W=2048, set_rows dynamic writes). Fallback
+    // to the legacy rebuild path on init failure or when the KV grows
+    // past the window. Enabled with KALI_QWEN_TXEXEC=1 while in soak.
+    bool                 tx_exec_enabled = false;
+    int                  tx_exec_window  = 2048;
+    TalkerExec           tx_exec;
 };
 
 // Open the talker GGUF and the codec GGUF, load every module on the

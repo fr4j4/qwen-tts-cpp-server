@@ -279,6 +279,24 @@ bool pipeline_tts_load(PipelineTTS * pt,
         }
     }
 
+    // Pre-build the Talker decode graph (fixed KV window, set_rows
+    // dynamic writes, isolated scheduler). OPT-IN: KALI_QWEN_TXEXEC=1.
+    // Soft failure: the legacy rebuild path stays as fallback.
+    pt->tx_exec_enabled = false;
+    {
+        const char * tx_env = getenv("KALI_QWEN_TXEXEC");
+        if (tx_env && tx_env[0] && tx_env[0] != '0' && pt->use_flash_attn) {
+            if (talker_exec_init(&pt->tx_exec, &pt->talker, &pt->talker_kv, pt->bp, pt->tx_exec_window,
+                                 pt->clamp_fp16)) {
+                pt->tx_exec_enabled = true;
+                qt_log(QT_LOG_INFO, "[Pipeline] talker exec: decode graph prebuilt (W=%d, replay, OPT-IN)",
+                       pt->tx_exec_window);
+            } else {
+                qt_log(QT_LOG_WARN, "[Pipeline] talker exec init failed; using legacy per-step graph rebuild");
+            }
+        }
+    }
+
     qt_log(QT_LOG_INFO,
            "[Pipeline] Loaded: arch=%s variant=%s tokenizer=%s codebooks=%d speaker_encoder=%s speakers=%zu fa=%s "
            "clamp_fp16=%s kv_talker=%s",
@@ -290,6 +308,8 @@ bool pipeline_tts_load(PipelineTTS * pt,
 }
 
 void pipeline_tts_free(PipelineTTS * pt) {
+    talker_exec_free(&pt->tx_exec);
+    pt->tx_exec_enabled = false;
     code_predictor_exec_free(&pt->cp_exec);
     pt->cp_exec_enabled = false;
     kv_cache_free(&pt->code_predictor_kv);
@@ -593,6 +613,10 @@ qt_status pipeline_tts_synthesize(PipelineTTS *                pt,
 
     std::vector<float> next_emb((size_t) hidden, 0.0f);
 
+    // Absolute KV write head for the talker exec decode graph (tracks
+    // prefill T_ctx + generated frames; guards the W-frame window).
+    int n_tx_frames = 0;
+
     // Streaming rolling decoder. Holds the K major codes buffer, the
     // emit cursor and the left context window. push_frame triggers an
     // emit as soon as chunk_frames new frames have accumulated since
@@ -615,12 +639,18 @@ qt_status pipeline_tts_synthesize(PipelineTTS *                pt,
         const char *        step_dump = (params->dump_dir && step == 0) ? params->dump_dir : NULL;
         bool                ok;
         Timer               t_talker;
+        const bool          tx_ok = pt->tx_exec_enabled && step > 0 && n_tx_frames < pt->tx_exec_window;
         if (step == 0) {
             ok = talker_forward_prefill(&pt->talker, &pt->talker_kv, pt->sched, prompt.input_embed.data(), prompt.T_ctx,
                                         use_fa, clamp_fp16, step_dump, &fw);
+            n_tx_frames = prompt.T_ctx;
+        } else if (tx_ok) {
+            ok = talker_exec_decode(&pt->tx_exec, next_emb.data(), n_tx_frames, &fw);
+            n_tx_frames++;
         } else {
             ok =
                 talker_forward_decode(&pt->talker, &pt->talker_kv, pt->sched, next_emb.data(), use_fa, clamp_fp16, &fw);
+            n_tx_frames++;
         }
         if (!ok) {
             return QT_STATUS_GENERATE_FAILED;
