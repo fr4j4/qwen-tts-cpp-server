@@ -2,6 +2,8 @@
 build/
 build-gpu/
 build-vulkan/
+build-cpu/
+build-cuda/
 
 # Models (downloaded separately)
 models/*.gguf

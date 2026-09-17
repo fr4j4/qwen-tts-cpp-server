@@ -27,6 +27,9 @@ struct KVCache {
     int head_dim;
     int max_seq_len;
     int cur_len;
+    // Element type of the cache tensors: F32 (reference) or F16 (GPU +
+    // flash attention path, halves bandwidth and footprint).
+    enum ggml_type type;
 
     // One pair per layer, both tensors live in `buffer` allocated below.
     std::vector<struct ggml_tensor *> k;
@@ -44,12 +47,14 @@ static bool kv_cache_init(KVCache *      kv,
                           int            n_kv_heads,
                           int            head_dim,
                           int            max_seq_len,
+                          enum ggml_type type,
                           ggml_backend_t backend) {
     kv->n_layers    = n_layers;
     kv->n_kv_heads  = n_kv_heads;
     kv->head_dim    = head_dim;
     kv->max_seq_len = max_seq_len;
     kv->cur_len     = 0;
+    kv->type        = type;
     kv->k.assign((size_t) n_layers, NULL);
     kv->v.assign((size_t) n_layers, NULL);
 
@@ -65,8 +70,8 @@ static bool kv_cache_init(KVCache *      kv,
     }
 
     for (int l = 0; l < n_layers; l++) {
-        kv->k[(size_t) l] = ggml_new_tensor_3d(kv->ctx, GGML_TYPE_F32, head_dim, max_seq_len, n_kv_heads);
-        kv->v[(size_t) l] = ggml_new_tensor_3d(kv->ctx, GGML_TYPE_F32, head_dim, max_seq_len, n_kv_heads);
+        kv->k[(size_t) l] = ggml_new_tensor_3d(kv->ctx, type, head_dim, max_seq_len, n_kv_heads);
+        kv->v[(size_t) l] = ggml_new_tensor_3d(kv->ctx, type, head_dim, max_seq_len, n_kv_heads);
         char name[64];
         snprintf(name, sizeof(name), "kv_k_l%d", l);
         ggml_set_name(kv->k[(size_t) l], name);
@@ -85,10 +90,11 @@ static bool kv_cache_init(KVCache *      kv,
     // Zero-init the buffer so any out of bounds read returns a known value.
     ggml_backend_buffer_clear(kv->buffer, 0);
 
-    size_t bytes_per_layer = (size_t) head_dim * (size_t) max_seq_len * (size_t) n_kv_heads * sizeof(float);
+    size_t elem_size = (type == GGML_TYPE_F16) ? sizeof(ggml_fp16_t) : sizeof(float);
+    size_t bytes_per_layer = (size_t) head_dim * (size_t) max_seq_len * (size_t) n_kv_heads * elem_size;
     size_t total_mb        = (size_t) (2 * n_layers) * bytes_per_layer / (1024 * 1024);
-    fprintf(stderr, "[KVCache] Allocated: %d layers, %d KV heads, head_dim %d, max_seq_len %d -> %zu MB\n", n_layers,
-            n_kv_heads, head_dim, max_seq_len, total_mb);
+    fprintf(stderr, "[KVCache] Allocated: %d layers, %d KV heads, head_dim %d, max_seq_len %d, %s -> %zu MB\n",
+            n_layers, n_kv_heads, head_dim, max_seq_len, type == GGML_TYPE_F16 ? "f16" : "f32", total_mb);
     return true;
 }
 

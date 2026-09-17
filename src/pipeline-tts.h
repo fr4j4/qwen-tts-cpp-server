@@ -11,6 +11,7 @@
 // directly so the facade in qwen.cpp stays a thin wrapper.
 
 #include "backend.h"
+#include "code-predictor-exec.h"
 #include "code-predictor-weights.h"
 #include "ggml-backend.h"
 #include "gguf-weights.h"
@@ -18,6 +19,7 @@
 #include "pipeline-codec.h"
 #include "qwen.h"
 #include "speaker-encoder-weights.h"
+#include "talker-exec.h"
 #include "talker-weights.h"
 
 #include <cstdint>
@@ -126,6 +128,20 @@ struct PipelineTTS {
     // frame in code_predictor_step.
     KVCache talker_kv;
     KVCache code_predictor_kv;
+
+    // Pre-built replayable graphs for the predictor sub-steps. Null
+    // steps mean the legacy per-call rebuild path stays active
+    // (init failure or KALI_QWEN_CP_LEGACY=1).
+    bool                 cp_exec_enabled = false;
+    CodePredictorExec    cp_exec;
+
+    // Pre-built replayable decode graph for the Talker (one token per
+    // step, fixed KV window W=2048, set_rows dynamic writes). Fallback
+    // to the legacy rebuild path on init failure or when the KV grows
+    // past the window. Enabled with KALI_QWEN_TXEXEC=1 while in soak.
+    bool                 tx_exec_enabled = false;
+    int                  tx_exec_window  = 2048;
+    TalkerExec           tx_exec;
 };
 
 // Open the talker GGUF and the codec GGUF, load every module on the

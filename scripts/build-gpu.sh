@@ -65,18 +65,18 @@ else
   echo "Using specified architectures: sm_${ARCHS//;/, sm_}"
 fi
 
-# Check for ggml submodule
-if [ ! -f ggml/CMakeLists.txt ]; then
-  echo "Initializing ggml submodule..."
-  git submodule update --init --recursive
-fi
+# ggml is vendored in-tree (updated to v0.24.0); no submodule init needed.
 
 rm -rf build-gpu
 mkdir build-gpu
 cd build-gpu
 
+# GGML_CUDA_GRAPHS=ON: automatic CUDA graph capture in ggml. Measured
+# -5% RTF on the TTS pipeline with zero code changes (see perf/talker
+# graphs branch history). Bit-exact vs the graphs=OFF build.
 cmake .. \
   -DGGML_CUDA=ON \
+  -DGGML_CUDA_GRAPHS=ON \
   -DCMAKE_CUDA_COMPILER="$NVCC" \
   -DCMAKE_CUDA_ARCHITECTURES="$ARCHS" \
   -DCMAKE_CUDA_HOST_COMPILER="$(command -v g++ 2>/dev/null || command -v c++)"

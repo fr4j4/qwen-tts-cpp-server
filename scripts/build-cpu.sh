@@ -19,11 +19,7 @@ if ! command -v g++ &>/dev/null && ! command -v c++ &>/dev/null; then
   exit 1
 fi
 
-# Check for ggml submodule
-if [ ! -f ggml/CMakeLists.txt ]; then
-  echo "Initializing ggml submodule..."
-  git submodule update --init --recursive
-fi
+# ggml is vendored in-tree (updated to v0.24.0); no submodule init needed.
 
 rm -rf build
 mkdir build
