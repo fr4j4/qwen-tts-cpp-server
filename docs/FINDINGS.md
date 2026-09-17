@@ -144,13 +144,11 @@ NVIDIA 595.91, Arch Linux, nvcc 12.4) con los modelos Q4_K_M oficiales.
 
 | Flag | Efecto | Default |
 |---|---|---|
-| `KALI_QWEN_CP_EXEC=1` | predictor pre-construido (solo mtp linear) | OFF |
-| `KALI_QWEN_TXEXEC=1` | talker decode pre-construido (GPU+FA, W=2048) | OFF |
+| `KALI_QWEN_CP_EXEC=0` | desactiva el predictor pre-construido (opt-out; unset/1/otro = ON). Solo aplica en geometrías mtp linear (1.7B); el 0.6B queda gated a legacy por geometría | **ON** |
+| `KALI_QWEN_TXEXEC=0` | desactiva el talker decode pre-construido (opt-out; unset/1/otro = ON; GPU + flash attention, W=2048 con legacy fallback) | **ON** |
 | `GGML_CUDA_GRAPHS=ON` (cmake) | captura automática de CUDA graphs | OFF upstream; ON en `scripts/build-gpu.sh` |
 
-Los execs quedan opt-in hasta completar soak en producción. Voltear
-defaults = editar `pipeline-tts.cpp` (dos bloques `getenv`) y actualizar
-este documento.
+Los execs quedaron **ON por defecto** (opt-out) tras validar la campaña: si fallan en init, caen solos al legacy rebuild (soft failure); el 0.6B (mtp identity) queda siempre en legacy por el gate de geometría (ver §2 Bug 3).
 
 ### Ojo con el CLI vs server
 
@@ -190,7 +188,7 @@ este documento.
    overhead sigue). Investigar qué nodo bloquea (¿set_rows? ¿FA?).
    Potencial: talker ~1.5-2 ms/f → RTF global ~0.12-0.13.
 3. **OOM → HTTP 503** (§2 Bug 4).
-4. Soak producción → voltear defaults de los execs.
+4. Soak producción → monitorizar execs en producción (defaults ya volteados a ON; el soak ES producción).
 5. Warmup en el provider Python (esconde ~2.3 s de CUDA init) y
    streaming PCM (TTFA real ~35 ms ya existe; kali-core pide wav
    one-shot hoy).

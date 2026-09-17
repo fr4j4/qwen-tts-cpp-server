@@ -260,11 +260,15 @@ bool pipeline_tts_load(PipelineTTS * pt,
     // the historical segfaults came from (a) the old pin's broken CUDA
     // graph capture keying and (b) shared-pool buffer moves when a large
     // talker prefill grew the common pool. Both are gone (see
-    // code-predictor-exec.h). Kept OPT-IN (KALI_QWEN_CP_EXEC=1) until
-    // kali-companion soaks it in production; flip the default then.
+    // code-predictor-exec.h). ON by default (opt-out: KALI_QWEN_CP_EXEC=0
+    // disables). CPU/non-FA falls back automatically; the 0.6B family is
+    // geometry-gated to legacy rebuild (see below).
     pt->cp_exec_enabled = false;
     {
         const char * exec_env = getenv("KALI_QWEN_CP_EXEC");
+        // Opt-out: exec runs unless the env var is explicitly "0"
+        // (unset or empty keeps it ON).
+        const bool cp_wanted = !(exec_env && exec_env[0] == '0');
         // Gate por geometria: el exec solo esta validado con predictors
         // de proyeccion mtp linear (familia 1.7B VoiceDesign). En el
         // 0.6B CustomVoice (mtp_proj identity) el replay corrompe los
@@ -272,38 +276,46 @@ bool pipeline_tts_load(PipelineTTS * pt,
         // (NaNs deterministas; misma uniforme de Philox => codes 2047,
         // sin EOS). Legacy rebuild en 0.6B: RTF 0.184, estable.
         const bool mtp_linear = (pt->code_predictor.mtp_proj_w != NULL);
-        if (exec_env && exec_env[0] && exec_env[0] != '0' && pt->use_flash_attn && mtp_linear) {
+        if (cp_wanted && pt->use_flash_attn && mtp_linear) {
             if (code_predictor_exec_init(&pt->cp_exec, &pt->code_predictor, &pt->code_predictor_kv, pt->sched,
                                          pt->bp, pt->talker.hidden_size, pt->use_flash_attn, pt->clamp_fp16)) {
                 pt->cp_exec_enabled = true;
-                qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: %zu prebuilt graphs (replay mode, OPT-IN)",
+                qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: %zu prebuilt graphs (replay mode, opt-out)",
                        pt->cp_exec.steps.size());
             } else {
                 qt_log(QT_LOG_WARN, "[Pipeline] predictor exec init failed; using legacy per-step graph rebuild");
             }
-        } else if (exec_env && exec_env[0] && exec_env[0] != '0' && !mtp_linear) {
+        } else if (cp_wanted && !mtp_linear) {
             qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: unsupported geometry (mtp identity, 0.6B family); "
                                 "using legacy rebuild");
         } else {
-            qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: disabled (legacy rebuild; KALI_QWEN_CP_EXEC=1 to enable)");
+            qt_log(QT_LOG_INFO, "[Pipeline] predictor exec: disabled (legacy rebuild; opt-out via KALI_QWEN_CP_EXEC=0, "
+                                "requires GPU flash-attention)");
         }
     }
 
     // Pre-build the Talker decode graph (fixed KV window, set_rows
-    // dynamic writes, isolated scheduler). OPT-IN: KALI_QWEN_TXEXEC=1.
-    // Soft failure: the legacy rebuild path stays as fallback.
+    // dynamic writes, isolated scheduler). ON by default (opt-out:
+    // KALI_QWEN_TXEXEC=0). Soft failure: the legacy rebuild path stays
+    // as fallback.
     pt->tx_exec_enabled = false;
     {
         const char * tx_env = getenv("KALI_QWEN_TXEXEC");
-        if (tx_env && tx_env[0] && tx_env[0] != '0' && pt->use_flash_attn) {
+        // Opt-out: exec runs unless the env var is explicitly "0"
+        // (unset or empty keeps it ON).
+        const bool tx_wanted = !(tx_env && tx_env[0] == '0');
+        if (tx_wanted && pt->use_flash_attn) {
             if (talker_exec_init(&pt->tx_exec, &pt->talker, &pt->talker_kv, pt->bp, pt->tx_exec_window,
                                  pt->clamp_fp16)) {
                 pt->tx_exec_enabled = true;
-                qt_log(QT_LOG_INFO, "[Pipeline] talker exec: decode graph prebuilt (W=%d, replay, OPT-IN)",
+                qt_log(QT_LOG_INFO, "[Pipeline] talker exec: decode graph prebuilt (W=%d, replay, opt-out)",
                        pt->tx_exec_window);
             } else {
                 qt_log(QT_LOG_WARN, "[Pipeline] talker exec init failed; using legacy per-step graph rebuild");
             }
+        } else {
+            qt_log(QT_LOG_INFO, "[Pipeline] talker exec: disabled (legacy rebuild; opt-out via KALI_QWEN_TXEXEC=0, "
+                                "requires GPU flash-attention)");
         }
     }
 

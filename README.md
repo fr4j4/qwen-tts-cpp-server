@@ -233,15 +233,18 @@ GGML_BACKEND=CUDA1 ./start-gpu.sh start  # Use second GPU
 | `TTS_HOST` | `127.0.0.1` | C++ server bind address |
 | `TTS_PORT` | `8870` | C++ server port (internal) |
 | `WRAPPER_PORT` | `8871` | Python wrapper / web UI port |
-| `KALI_QWEN_CP_EXEC` | `0` | Pre-built replayable graphs for the code predictor. Only takes effect on mtp-linear geometries (1.7B family); the 0.6B (mtp identity) is auto-gated to the legacy path. See `docs/FINDINGS.md` §2 Bug 3 |
-| `KALI_QWEN_TXEXEC` | `0` | Pre-built replayable decode graph for the Talker (GPU + flash attention only, fixed KV window W=2048 with automatic legacy fallback past the window). See `docs/FINDINGS.md` |
+| `KALI_QWEN_CP_EXEC=0` | ON (opt-out) | Pre-built replayable graphs for the code predictor. Only takes effect on mtp-linear geometries (1.7B family); the 0.6B (mtp identity) is auto-gated to the legacy path. See `docs/FINDINGS.md` §2 Bug 3 |
+| `KALI_QWEN_TXEXEC=0` | ON (opt-out) | Pre-built replayable decode graph for the Talker (GPU + flash attention only, fixed KV window W=2048 with automatic legacy fallback past the window). See `docs/FINDINGS.md` |
 
-Both exec flags are **opt-in** while the engine soaks in production.
-Measured on RTX 3060 (1.7B VoiceDesign, Q4_K_M): RTF 0.205 → 0.153 with
-both enabled — outputs are bit-exact vs the legacy path for every
-(text, seed) pair, except where explicitly gated. Full benchmark
-matrix, root-cause analyses of every bug found during the optimization
-campaign, and the validation procedure live in **`docs/FINDINGS.md`**.
+Both exec flags are **on by default (opt-out)** — set them to `0` to
+disable. They only run on GPU + flash attention; CPU and non-FA builds
+fall back to legacy automatically, and a failed init is a soft failure
+(legacy rebuild). Measured on RTX 3060 (1.7B VoiceDesign, Q4_K_M): RTF
+0.205 → 0.153 with both enabled — outputs are bit-exact vs the legacy
+path for every (text, seed) pair, except where explicitly gated. Full
+benchmark matrix, root-cause analyses of every bug found during the
+optimization campaign, and the validation procedure live in
+**`docs/FINDINGS.md`**.
 
 **Examples:**
 
