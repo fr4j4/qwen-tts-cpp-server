@@ -661,7 +661,10 @@ qt_status pipeline_tts_synthesize(PipelineTTS *                pt,
         const char *        step_dump = (params->dump_dir && step == 0) ? params->dump_dir : NULL;
         bool                ok;
         Timer               t_talker;
-        const bool          tx_ok = pt->tx_exec_enabled && step > 0 && n_tx_frames < pt->tx_exec_window;
+        // [tx-sliding-window] Circular KV window: the exec writes row
+        // n_past % W, so there is no hard ceiling anymore — the exec
+        // handles every decode step (no legacy fallback mid-generation).
+        const bool tx_ok = pt->tx_exec_enabled && step > 0;
         if (step == 0) {
             ok = talker_forward_prefill(&pt->talker, &pt->talker_kv, pt->sched, prompt.input_embed.data(), prompt.T_ctx,
                                         use_fa, clamp_fp16, step_dump, &fw);

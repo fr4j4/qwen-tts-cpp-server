@@ -62,6 +62,8 @@ struct TalkerExec {
     // Host-side static causal table [W, W] f16: row p is the attention
     // mask for absolute position p (0 for k <= p, -inf beyond).
     std::vector<ggml_fp16_t> causal;
+    // Post-wrap mask row [W] f16: all zeros (attend the full window).
+    std::vector<ggml_fp16_t> wrap_mask;
 
     std::vector<float> logits_out;
     std::vector<float> hidden_out;
@@ -174,13 +176,20 @@ static bool talker_exec_init(TalkerExec *          te,
     te->W         = W;
     te->clamp_fp16 = clamp_fp16;
 
-    // Static causal table: row p allows k <= p.
+    // Static causal table: row p allows k <= p (pre-wrap phase only).
     te->causal.assign((size_t) W * (size_t) W, ggml_fp32_to_fp16(-INFINITY));
     for (int p = 0; p < W; p++) {
         for (int k = 0; k <= p; k++) {
             te->causal[(size_t) p * (size_t) W + (size_t) k] = ggml_fp32_to_fp16(0.0f);
         }
     }
+    // Post-wrap mask: once the buffer has wrapped, every physical row
+    // holds a valid position from the last W frames (including the row
+    // just overwritten by the current step's K/V), so the row is all
+    // zeros: attend everything. Physical order is irrelevant — RoPE was
+    // baked into each cached K with its absolute position at write time,
+    // and attention is order-invariant (softmax over an unordered set).
+    te->wrap_mask.assign((size_t) W, ggml_fp32_to_fp16(0.0f));
 
     const int    n_layers    = tw->num_hidden_layers;
     const int    max_nodes   = 48 * n_layers + 128;
@@ -282,11 +291,19 @@ static bool talker_exec_decode(TalkerExec *  te,
     const int32_t pos = n_past;
     ggml_backend_tensor_set(te->pos_in, &pos, 0, sizeof(int32_t));
 
-    // Mask row for the absolute query position (static table, one row).
-    ggml_backend_tensor_set(te->mask_in, te->causal.data() + (size_t) n_past * (size_t) W, 0,
-                            (size_t) W * sizeof(ggml_fp16_t));
+    // Circular KV window: this step writes physical row n_past % W.
+    // Pre-wrap (n_past < W) the standard causal row hides the stale rows
+    // ahead; post-wrap all W rows hold valid positions (the current one
+    // included — set_rows lands before attention in the graph), so the
+    // all-zeros row applies.
+    if (n_past < W) {
+        ggml_backend_tensor_set(te->mask_in, te->causal.data() + (size_t) n_past * (size_t) W, 0,
+                                (size_t) W * sizeof(ggml_fp16_t));
+    } else {
+        ggml_backend_tensor_set(te->mask_in, te->wrap_mask.data(), 0, (size_t) W * sizeof(ggml_fp16_t));
+    }
 
-    const int32_t row = n_past;
+    const int32_t row = n_past % W;
     ggml_backend_tensor_set(te->setidx, &row, 0, sizeof(int32_t));
 
     if (ggml_backend_sched_graph_compute(te->sched, te->gf) != GGML_STATUS_SUCCESS) {

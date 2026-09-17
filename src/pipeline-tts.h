@@ -140,7 +140,7 @@ struct PipelineTTS {
     // to the legacy rebuild path on init failure or when the KV grows
     // past the window. Enabled with KALI_QWEN_TXEXEC=1 while in soak.
     bool                 tx_exec_enabled = false;
-    int                  tx_exec_window  = 2048;
+    int                  tx_exec_window  = 512; // circular: physical rows; audio context = W/12.5 s
     TalkerExec           tx_exec;
 };
 
