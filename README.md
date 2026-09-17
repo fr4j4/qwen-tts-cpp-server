@@ -233,6 +233,15 @@ GGML_BACKEND=CUDA1 ./start-gpu.sh start  # Use second GPU
 | `TTS_HOST` | `127.0.0.1` | C++ server bind address |
 | `TTS_PORT` | `8870` | C++ server port (internal) |
 | `WRAPPER_PORT` | `8871` | Python wrapper / web UI port |
+| `KALI_QWEN_CP_EXEC` | `0` | Pre-built replayable graphs for the code predictor. Only takes effect on mtp-linear geometries (1.7B family); the 0.6B (mtp identity) is auto-gated to the legacy path. See `docs/FINDINGS.md` §2 Bug 3 |
+| `KALI_QWEN_TXEXEC` | `0` | Pre-built replayable decode graph for the Talker (GPU + flash attention only, fixed KV window W=2048 with automatic legacy fallback past the window). See `docs/FINDINGS.md` |
+
+Both exec flags are **opt-in** while the engine soaks in production.
+Measured on RTX 3060 (1.7B VoiceDesign, Q4_K_M): RTF 0.205 → 0.153 with
+both enabled — outputs are bit-exact vs the legacy path for every
+(text, seed) pair, except where explicitly gated. Full benchmark
+matrix, root-cause analyses of every bug found during the optimization
+campaign, and the validation procedure live in **`docs/FINDINGS.md`**.
 
 **Examples:**
 
@@ -449,7 +458,18 @@ qwen-tts-cpp-server/
 
 ## Tested Models
 
-This project has been tested with the **0.6B CustomVoice** model (Q4_K_M and Q8_0 quantizations) on both CPU and NVIDIA GPU (CUDA). The 1.7B variants and other modes (base, voicedesign) should work without changes — the C++ server loads any valid GGUF pair — but are not yet verified by the maintainer. If you test them, please open an issue with your results.
+Validated on the `development` branch (Sep 2026 campaign, RTX 3060 /
+CUDA 12.4 / driver 595.91, ggml v0.24.0 pin, Q4_K_M):
+
+| Model | Legacy | CP_EXEC | TXEXEC | Notes |
+|---|---|---|---|---|
+| **1.7B VoiceDesign** | ✅ | ✅ bit-exact | ✅ bit-exact | full speed: RTF 0.153 with both execs |
+| **1.7B Base** (voice cloning) | ✅ | ✅ bit-exact | ✅ bit-exact | cloning via `.spk`/`.rvq` verified |
+| **0.6B CustomVoice** | ✅ | ⛔ auto-gated | ✅ bit-exact | NaN bug in CP_EXEC with mtp-identity geometry; auto-falls back to legacy (see `docs/FINDINGS.md` §2 Bug 3) |
+
+CPU fallback validated on all of the above (reference path, F32, fully
+deterministic). Earlier state (pre-campaign): only 0.6B CustomVoice on
+CPU/CUDA had been verified by the maintainer.
 
 ## Credits
 
