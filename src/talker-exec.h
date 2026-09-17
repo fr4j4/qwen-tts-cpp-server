@@ -238,6 +238,8 @@ static bool talker_exec_init(TalkerExec *          te,
         te->gctx = nullptr;
         return false;
     }
+    // [tx-graph-capture] Instrumentación temporal: nodos reales del grafo.
+    fprintf(stderr, "[TalkerExec] graph size=%d\n", ggml_graph_size(te->gf));
 
     // Upload the process-lifetime constants once. mask_in starts as the
     // row for position 0; it is refreshed per step with the row for
