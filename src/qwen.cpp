@@ -109,6 +109,15 @@ void qt_log(qt_log_level level, const char * fmt, ...) {
     if (!fmt) {
         return;
     }
+    // DEBUG lines (sampler traces) only with QWEN_DEBUG=1 : off the hot
+    // path in production, available for the bisection harnesses.
+    static const bool debug_on = [] {
+        const char * e = std::getenv("QWEN_DEBUG");
+        return e && e[0] == '1';
+    }();
+    if (level == QT_LOG_DEBUG && !debug_on) {
+        return;
+    }
     char    stackbuf[512];
     char *  buf    = stackbuf;
     int     needed = 0;
