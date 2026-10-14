@@ -8,6 +8,7 @@
 #include "qwen.h"
 #include "version.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -29,7 +30,8 @@ static void print_usage(const char * prog) {
             "  --chunk-sec <f>         Max streamed audio chunk in seconds (default and cap: 24.0)\n"
             "  --first-chunk-frames <n> Progressive start: first chunk after n codec frames,\n"
             "                          doubling up to --chunk-sec (default: 2, 0 = off)\n"
-            "  --left-context-sec <f>  Codec left context per chunk in seconds (default: 6.0)\n",
+            "  --left-context-sec <f>  Codec left context per chunk in seconds (default: 6.0)\n"
+            "  --no-warmup             Skip the warmup synthesis before listening\n",
             prog);
 }
 
@@ -49,6 +51,7 @@ int main(int argc, char ** argv) {
     bool          clamp_fp16 = false;
     float         chunk_sec  = 24.0f;
     int           first_chunk_frames = 2;
+    bool          warmup             = true;
     float         left_ctx_sec       = 6.0f;  // >= the codec transformer window (72 frames = 5.76 s)
 
     for (int i = 1; i < argc; i++) {
@@ -71,6 +74,8 @@ int main(int argc, char ** argv) {
             chunk_sec = (float) std::atof(argv[++i]);
         } else if (!std::strcmp(arg, "--first-chunk-frames") && i + 1 < argc) {
             first_chunk_frames = std::atoi(argv[++i]);
+        } else if (!std::strcmp(arg, "--no-warmup")) {
+            warmup = false;
         } else if (!std::strcmp(arg, "--left-context-sec") && i + 1 < argc) {
             left_ctx_sec = (float) std::atof(argv[++i]);
         } else if (!std::strcmp(arg, "--help") || !std::strcmp(arg, "-h")) {
@@ -148,6 +153,33 @@ int main(int argc, char ** argv) {
         }
         return 0;
     };
+
+    // Warmup before listening : the first synthesis of the process pays
+    // CUDA/cuBLAS init, graph allocation and CUDA graph capture. Running a
+    // short throwaway synthesis here keeps that off the first client
+    // request. Failure only warns (e.g. a Base model needs a reference).
+    if (warmup) {
+        tts_request w;
+        w.input = "Hola.";
+        w.seed  = 0;
+        if (!be.voices.empty()) {
+            w.voice = be.voices[0];
+        } else {
+            w.instructions = "A calm, clear voice.";
+        }
+        tts_sink    discard = [](const float *, int) { return true; };
+        std::string werr;
+        const auto  t0 = std::chrono::steady_clock::now();
+        const int   wrc = be.synthesize(w, discard, werr);
+        const long  ms  = (long) std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - t0)
+                             .count();
+        if (wrc == 0) {
+            fprintf(stderr, "[Server] warmup done in %ld ms\n", ms);
+        } else {
+            fprintf(stderr, "[Server] WARN: warmup failed (%d): %s\n", wrc, werr.c_str());
+        }
+    }
 
     int rc = tts_server_run(be, cfg);
     qt_free(q);
