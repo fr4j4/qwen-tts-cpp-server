@@ -408,7 +408,10 @@ el texto corto.
 - C2, L8, la validación y el OOM no cambian el audio (md5 idénticos).
 
 Regresión al final de la fase: GPU **41/41** con ASR (la secuencia hostil
-suma `extralargo`; se exige un EOS por pieza).
+suma `extralargo`; se exige un EOS por pieza). CPU **34/34** (sin ASR), con
+md5 de corto/medio/largo idénticos a la fase 0. En CPU el split resultó
+necesario: con un binario sin él, `extralargo` (seed 42) llegó al techo de
+2048 frames sin EOS (163,8 s); partido, 4 piezas con EOS y 93,6 s.
 
 ## Archivos de esta fase
 
