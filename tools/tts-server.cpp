@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 static void print_usage(const char * prog) {
     fprintf(stderr, "qwentts.cpp %s\n\n", QWEN_VERSION);
@@ -32,8 +33,85 @@ static void print_usage(const char * prog) {
             "                          growing x4 up to --chunk-sec (default: GPU 2, CPU 0 = off)\n"
             "  --left-context-sec <f>  Codec left context per chunk in seconds (default: GPU 6.0, CPU 2.0)\n"
             "  --no-warmup             Skip the warmup synthesis before listening\n"
-            "  --threads <n>           CPU threads for ggml (default: physical cores)\n",
+            "  --threads <n>           CPU threads for ggml (default: physical cores)\n"
+            "  --split-chars <n>       Texts longer than n bytes are synthesised as pieces of\n"
+            "                          whole sentences (<= ~n/2 bytes each) in one stream\n"
+            "                          (default: 800, 0 = never split)\n",
             prog);
+}
+
+// Split a long text into pieces of whole sentences of at most ~target
+// bytes. Sentences end at . ! ? (followed by whitespace or the end, so
+// "3.5" stays whole), at the UTF-8 marks … 。 ！ ？, or at a newline. A
+// sentence longer than target is cut at the last ", " "; " ": " or space
+// before target. Pieces are trimmed ; empty ones are dropped.
+static std::vector<std::string> split_text(const std::string & s, size_t target) {
+    auto trim = [](const std::string & x) {
+        size_t a = x.find_first_not_of(" \t\r\n");
+        size_t b = x.find_last_not_of(" \t\r\n");
+        return a == std::string::npos ? std::string() : x.substr(a, b - a + 1);
+    };
+    std::vector<std::string> sentences;
+    std::string              cur;
+    for (size_t i = 0; i < s.size(); i++) {
+        cur += s[i];
+        bool end = false;
+        const char c = s[i];
+        if (c == '\n') {
+            end = true;
+        } else if ((c == '.' || c == '!' || c == '?') &&
+                   (i + 1 == s.size() || s[i + 1] == ' ' || s[i + 1] == '\n' || s[i + 1] == '\t')) {
+            end = true;
+        } else {
+            static const char * marks[] = { "\xE2\x80\xA6", "\xE3\x80\x82", "\xEF\xBC\x81", "\xEF\xBC\x9F" };
+            for (const char * m : marks) {
+                const size_t n = std::strlen(m);
+                if (cur.size() >= n && cur.compare(cur.size() - n, n, m) == 0) {
+                    end = true;
+                }
+            }
+        }
+        if (end) {
+            sentences.push_back(cur);
+            cur.clear();
+        }
+    }
+    sentences.push_back(cur);
+
+    std::vector<std::string> pieces;
+    std::string              acc;
+    auto flush = [&] {
+        std::string t = trim(acc);
+        if (!t.empty()) {
+            pieces.push_back(t);
+        }
+        acc.clear();
+    };
+    for (std::string sent : sentences) {
+        while (sent.size() > target) {
+            size_t cut = std::string::npos;
+            for (const char * sep : { ", ", "; ", ": " }) {
+                size_t k = sent.rfind(sep, target);
+                if (k != std::string::npos && k > target / 3 && (cut == std::string::npos || k > cut)) {
+                    cut = k + 1;
+                }
+            }
+            if (cut == std::string::npos) {
+                size_t k = sent.rfind(' ', target);
+                cut      = (k != std::string::npos && k > 0) ? k : target;
+            }
+            flush();
+            acc = sent.substr(0, cut);
+            flush();
+            sent = sent.substr(cut);
+        }
+        if (acc.size() + sent.size() > target) {
+            flush();
+        }
+        acc += sent;
+    }
+    flush();
+    return pieces;
 }
 
 // Trim a path down to its file name for the reported model id.
@@ -53,6 +131,7 @@ int main(int argc, char ** argv) {
     float         chunk_sec  = 24.0f;
     int           first_chunk_frames = -1;  // -1 : backend default (GPU 2, CPU 0)
     bool          warmup             = true;
+    int           split_chars        = 800;
     float         left_ctx_sec       = -1.0f;  // < 0 : backend default (GPU 6.0, CPU 2.0)
 
     for (int i = 1; i < argc; i++) {
@@ -77,6 +156,8 @@ int main(int argc, char ** argv) {
             first_chunk_frames = std::atoi(argv[++i]);
         } else if (!std::strcmp(arg, "--threads") && i + 1 < argc) {
             setenv("QWEN_N_THREADS", argv[++i], 1);
+        } else if (!std::strcmp(arg, "--split-chars") && i + 1 < argc) {
+            split_chars = std::atoi(argv[++i]);
         } else if (!std::strcmp(arg, "--no-warmup")) {
             warmup = false;
         } else if (!std::strcmp(arg, "--left-context-sec") && i + 1 < argc) {
@@ -138,11 +219,21 @@ int main(int argc, char ** argv) {
     // The adapter always drives the streaming pipeline : on_chunk routes to
     // the shared sink, which either streams to the socket (pcm) or fills a
     // one-shot buffer (wav). Either way the audio path is identical.
-    be.synthesize = [q, &lang, chunk_sec, first_chunk_frames, left_ctx_sec](const tts_request & req, const tts_sink & sink,
-                                                              std::string & err) -> int {
+    be.synthesize = [q, &lang, chunk_sec, first_chunk_frames, left_ctx_sec, split_chars](
+                        const tts_request & req, const tts_sink & sink, std::string & err) -> int {
+        // Long texts : the model drifts (no EOS, babble) past ~1000 chars in
+        // one prompt, so synthesise whole-sentence pieces back to back on
+        // the same stream, same seed. Short texts stay one piece.
+        std::vector<std::string> pieces;
+        if (split_chars > 0 && req.input.size() > (size_t) split_chars) {
+            pieces = split_text(req.input, (size_t) split_chars / 2);
+            fprintf(stderr, "[Server] long text (%zu bytes): %zu pieces\n", req.input.size(), pieces.size());
+        } else {
+            pieces.push_back(req.input);
+        }
+
         struct qt_tts_params p;
         qt_tts_default_params(&p);
-        p.text = req.input.c_str();
         p.lang = req.language.empty() ? lang.c_str() : req.language.c_str();
         // Capped at 24 s (the upstream default): one codec decode over a
         // longer block reserves GBs of VRAM and ggml aborts on OOM (a
@@ -166,12 +257,15 @@ int main(int argc, char ** argv) {
         };
         p.on_chunk_user_data = (void *) sink_ptr;
 
-        struct qt_audio out = {};
-        enum qt_status  rc  = qt_synthesize(q, &p, &out);
-        qt_audio_free(&out);
-        if (rc != QT_STATUS_OK) {
-            err = qt_last_error();
-            return (int) rc;
+        for (const std::string & piece : pieces) {
+            p.text              = piece.c_str();
+            struct qt_audio out = {};
+            enum qt_status  rc  = qt_synthesize(q, &p, &out);
+            qt_audio_free(&out);
+            if (rc != QT_STATUS_OK) {
+                err = qt_last_error();
+                return (int) rc;
+            }
         }
         return 0;
     };

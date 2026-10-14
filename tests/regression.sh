@@ -7,7 +7,7 @@
 #   2. 0.6B (mtp identity): el gate loguea "unsupported geometry"
 #   3. determinismo: texto medio x3 -> md5 del PCM idéntico
 #   4. EOS presente, frames < max_new_tokens (2048), duración razonable
-#   5. secuencia hostil corto -> largo -> medio: sin NaN, sin 2048 frames,
+#   5. secuencia hostil corto -> largo -> extralargo -> medio: sin NaN, sin 2048 frames,
 #      server vivo, y el md5 del medio igual al del paso 3 (sin fuga de
 #      estado entre síntesis)
 #   6. (opcional) md5 contra golden: --golden FILE / --update-golden
@@ -138,9 +138,12 @@ synth() {
   LAST_MD5=$md5
   sleep 0.2
   seg=$(tail -n +"$from" "$LOG")
-  frames=$(grep -o 'Generation done : [0-9]*' <<< "$seg" | tail -1 | grep -o '[0-9]*$')
+  # Un texto largo puede ir en varias piezas: frames = la pieza más larga.
+  frames=$(grep -o 'Generation done : [0-9]*' <<< "$seg" | grep -o '[0-9]*$' | sort -n | tail -1)
   echo "        $label: frames=${frames:-?} audio=${audio}s md5=$md5 ttfb=$(jget "$res" ttfb_ms)ms rtf=$(jget "$res" rtf)"
-  if grep -q 'EOS at step' <<< "$seg"; then ok "$label: EOS presente"; else bad "$label: sin EOS"; fi
+  local n_eos n_done
+  n_eos=$(grep -c 'EOS at step' <<< "$seg"); n_done=$(grep -c 'Generation done' <<< "$seg")
+  if [ "$n_eos" -ge 1 ] && [ "$n_eos" -eq "$n_done" ]; then ok "$label: EOS presente ($n_eos pieza/s)"; else bad "$label: EOS $n_eos de $n_done piezas"; fi
   if [ -n "$frames" ] && [ "$frames" -lt 2048 ]; then ok "$label: frames<2048"; else bad "$label: frames=${frames:-?} (techo)"; fi
   if grep -qiw 'nan' <<< "$seg"; then bad "$label: NaN en el log"; else ok "$label: sin NaN"; fi
   # Duración razonable: entre chars/40 y chars/6 segundos (español ~13-15 chars/s).
@@ -178,9 +181,11 @@ fi
 MEDIO_MD5=${MD5S[0]}
 
 # --- 5. secuencia hostil -----------------------------------------------------
-echo "-- secuencia hostil corto -> largo -> medio"
+echo "-- secuencia hostil corto -> largo -> extralargo -> medio"
 synth corto "$T/corto.txt"; CORTO_MD5=$LAST_MD5
 synth largo "$T/largo.txt"; LARGO_MD5=$LAST_MD5
+# extralargo (1170 chars) : el server lo parte por oraciones (--split-chars).
+synth extralargo "$T/extralargo.txt"
 synth medio "$T/medio.txt"
 if [ -n "$LAST_MD5" ] && [ "$LAST_MD5" = "$MEDIO_MD5" ]; then
   ok "medio tras hostil = medio inicial (sin fuga de estado)"
