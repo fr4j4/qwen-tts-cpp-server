@@ -9,10 +9,12 @@
 #include "version.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 static void print_usage(const char * prog) {
     fprintf(stderr, "qwentts.cpp %s\n\n", QWEN_VERSION);
@@ -29,12 +31,195 @@ static void print_usage(const char * prog) {
             "  --clamp-fp16            Clamp hidden states to FP16 range\n"
             "  --chunk-sec <f>         Max streamed audio chunk in seconds (default and cap: 24.0)\n"
             "  --first-chunk-frames <n> Progressive start: first chunk after n codec frames,\n"
-            "                          doubling up to --chunk-sec (default: GPU 2, CPU 0 = off)\n"
+            "                          growing x4 up to --chunk-sec (default: GPU 2, CPU 0 = off)\n"
             "  --left-context-sec <f>  Codec left context per chunk in seconds (default: GPU 6.0, CPU 2.0)\n"
             "  --no-warmup             Skip the warmup synthesis before listening\n"
-            "  --threads <n>           CPU threads for ggml (default: physical cores)\n",
+            "  --threads <n>           CPU threads for ggml (default: physical cores)\n"
+            "  --split-chars <n>       Texts longer than n bytes are synthesised as pieces of\n"
+            "                          whole sentences (<= ~n/2 bytes each) in one stream\n"
+            "                          (default: 800, 0 = never split)\n",
             prog);
 }
+
+// Split a long text into pieces of whole sentences of at most ~target
+// bytes. Sentences end at . ! ? (followed by whitespace or the end, so
+// "3.5" stays whole), at the UTF-8 marks … 。 ！ ？, or at a newline. A
+// sentence longer than target is cut at the last ", " "; " ": " or space
+// before target. Pieces are trimmed ; empty ones are dropped.
+static std::vector<std::string> split_text(const std::string & s, size_t target) {
+    auto trim = [](const std::string & x) {
+        size_t a = x.find_first_not_of(" \t\r\n");
+        size_t b = x.find_last_not_of(" \t\r\n");
+        return a == std::string::npos ? std::string() : x.substr(a, b - a + 1);
+    };
+    std::vector<std::string> sentences;
+    std::string              cur;
+    for (size_t i = 0; i < s.size(); i++) {
+        cur += s[i];
+        bool end = false;
+        const char c = s[i];
+        if (c == '\n') {
+            end = true;
+        } else if ((c == '.' || c == '!' || c == '?') &&
+                   (i + 1 == s.size() || s[i + 1] == ' ' || s[i + 1] == '\n' || s[i + 1] == '\t')) {
+            end = true;
+        } else {
+            static const char * marks[] = { "\xE2\x80\xA6", "\xE3\x80\x82", "\xEF\xBC\x81", "\xEF\xBC\x9F" };
+            for (const char * m : marks) {
+                const size_t n = std::strlen(m);
+                if (cur.size() >= n && cur.compare(cur.size() - n, n, m) == 0) {
+                    end = true;
+                }
+            }
+        }
+        if (end) {
+            sentences.push_back(cur);
+            cur.clear();
+        }
+    }
+    sentences.push_back(cur);
+
+    std::vector<std::string> pieces;
+    std::string              acc;
+    auto flush = [&] {
+        std::string t = trim(acc);
+        if (!t.empty()) {
+            pieces.push_back(t);
+        }
+        acc.clear();
+    };
+    for (std::string sent : sentences) {
+        while (sent.size() > target) {
+            size_t cut = std::string::npos;
+            for (const char * sep : { ", ", "; ", ": " }) {
+                size_t k = sent.rfind(sep, target);
+                if (k != std::string::npos && k > target / 3 && (cut == std::string::npos || k > cut)) {
+                    cut = k + 1;
+                }
+            }
+            if (cut == std::string::npos) {
+                size_t k = sent.rfind(' ', target);
+                cut      = (k != std::string::npos && k > 0) ? k : target;
+            }
+            flush();
+            acc = sent.substr(0, cut);
+            flush();
+            sent = sent.substr(cut);
+        }
+        if (acc.size() + sent.size() > target) {
+            flush();
+        }
+        acc += sent;
+    }
+    flush();
+    return pieces;
+}
+
+// Joins between the pieces of a split text. Each piece is a whole
+// synthesis : it ends with the silence the model leaves after EOS and the
+// next one starts with its own lead-in silence, so a join measured 1.0-2.0 s
+// of silence against 0.4-0.8 s between sentences inside a piece, which made
+// the joins audible. This filter sits between the pipeline and the client
+// sink and keeps at most trail_keep of silence at the end of a piece and
+// lead_keep at the start of the next one. Silence = 10 ms blocks under
+// -44 dBFS RMS ; cuts happen inside silence, with a 5 ms fade, so they
+// cannot click. Silence inside a piece is held back, not dropped : it is
+// released as soon as speech resumes.
+struct join_trimmer {
+    static constexpr int   kBlock = 240;     // 10 ms at 24 kHz
+    static constexpr float kThr   = 0.006f;  // RMS, about -44 dBFS
+    static constexpr int   kFade  = 120;     // 5 ms
+
+    const tts_sink *   out        = nullptr;
+    int                lead_keep  = 0;
+    int                trail_keep = 0;
+    bool               leading    = false;  // dropping lead-in silence
+    bool               hold_trail = false;  // holding silence for a trailing cut
+    bool               spoke      = false;  // this piece already produced speech
+    std::vector<float> pend;                 // incomplete block
+    std::vector<float> lead;                 // last lead_keep silent samples
+    std::vector<float> held;                 // silence since the last speech
+
+    bool emit(const float * s, int n) { return n <= 0 || (*out)(s, n); }
+
+    void begin_piece(bool first, bool last) {
+        leading    = !first;
+        hold_trail = !last;
+        spoke      = false;
+        pend.clear();
+        lead.clear();
+        held.clear();
+    }
+
+    bool block(const float * b, int n) {
+        double e = 0.0;
+        for (int i = 0; i < n; i++) {
+            e += (double) b[i] * b[i];
+        }
+        const bool silent = n > 0 && std::sqrt(e / n) < kThr;
+        if (leading) {
+            if (silent) {
+                lead.insert(lead.end(), b, b + n);
+                if ((int) lead.size() > lead_keep) {
+                    lead.erase(lead.begin(), lead.end() - lead_keep);
+                }
+                return true;
+            }
+            leading = false;
+            for (int i = 0; i < kFade && i < (int) lead.size(); i++) {
+                lead[(size_t) i] *= (float) i / kFade;
+            }
+            if (!emit(lead.data(), (int) lead.size())) {
+                return false;
+            }
+            lead.clear();
+        }
+        // Silence before the first speech of a piece passes straight through
+        // (the first piece's lead-in is the time to first audio).
+        if (hold_trail && spoke) {
+            if (silent) {
+                held.insert(held.end(), b, b + n);
+                return true;
+            }
+            if (!emit(held.data(), (int) held.size())) {
+                return false;
+            }
+            held.clear();
+        }
+        spoke = spoke || !silent;
+        return emit(b, n);
+    }
+
+    bool push(const float * s, int n) {
+        pend.insert(pend.end(), s, s + n);
+        size_t off = 0;
+        for (; off + kBlock <= pend.size(); off += kBlock) {
+            if (!block(pend.data() + off, kBlock)) {
+                return false;
+            }
+        }
+        pend.erase(pend.begin(), pend.begin() + (std::ptrdiff_t) off);
+        return true;
+    }
+
+    bool end_piece() {
+        if (!pend.empty() && !block(pend.data(), (int) pend.size())) {
+            return false;
+        }
+        pend.clear();
+        if (hold_trail && !held.empty()) {
+            const int keep = (int) held.size() < trail_keep ? (int) held.size() : trail_keep;
+            for (int i = 0; i < kFade && i < keep; i++) {
+                held[(size_t) (keep - 1 - i)] *= (float) i / kFade;
+            }
+            if (!emit(held.data(), keep)) {
+                return false;
+            }
+        }
+        held.clear();
+        return true;
+    }
+};
 
 // Trim a path down to its file name for the reported model id.
 static std::string basename_of(const char * path) {
@@ -53,6 +238,7 @@ int main(int argc, char ** argv) {
     float         chunk_sec  = 24.0f;
     int           first_chunk_frames = -1;  // -1 : backend default (GPU 2, CPU 0)
     bool          warmup             = true;
+    int           split_chars        = 800;
     float         left_ctx_sec       = -1.0f;  // < 0 : backend default (GPU 6.0, CPU 2.0)
 
     for (int i = 1; i < argc; i++) {
@@ -77,6 +263,8 @@ int main(int argc, char ** argv) {
             first_chunk_frames = std::atoi(argv[++i]);
         } else if (!std::strcmp(arg, "--threads") && i + 1 < argc) {
             setenv("QWEN_N_THREADS", argv[++i], 1);
+        } else if (!std::strcmp(arg, "--split-chars") && i + 1 < argc) {
+            split_chars = std::atoi(argv[++i]);
         } else if (!std::strcmp(arg, "--no-warmup")) {
             warmup = false;
         } else if (!std::strcmp(arg, "--left-context-sec") && i + 1 < argc) {
@@ -131,15 +319,32 @@ int main(int argc, char ** argv) {
     for (int i = 0; i < n; i++) {
         be.voices.push_back(qt_speaker_name(q, i));
     }
+    for (int i = 0; i < qt_n_languages(q); i++) {
+        be.languages.push_back(qt_language_name(q, i));
+    }
 
     // The adapter always drives the streaming pipeline : on_chunk routes to
     // the shared sink, which either streams to the socket (pcm) or fills a
     // one-shot buffer (wav). Either way the audio path is identical.
-    be.synthesize = [q, &lang, chunk_sec, first_chunk_frames, left_ctx_sec](const tts_request & req, const tts_sink & sink,
-                                                              std::string & err) -> int {
+    be.synthesize = [q, &lang, chunk_sec, first_chunk_frames, left_ctx_sec, split_chars](
+                        const tts_request & req, const tts_sink & sink, std::string & err) -> int {
+        // Long texts : the model drifts (no EOS, babble) past ~1000 chars in
+        // one prompt, so synthesise whole-sentence pieces back to back on
+        // the same stream, same seed. Short texts stay one piece.
+        std::vector<std::string> pieces;
+        if (split_chars > 0 && req.input.size() > (size_t) split_chars) {
+            // Pieces of at most split_chars / 2 bytes. Longer pieces (3/4 of
+            // split_chars : 3 instead of 4 for 1170 chars) skipped text on 2
+            // of 6 seeds (ASR recall 0.73 / 0.82), so the pieces stay short
+            // and join_trimmer smooths the joins instead.
+            pieces = split_text(req.input, (size_t) split_chars / 2);
+            fprintf(stderr, "[Server] long text (%zu bytes): %zu pieces\n", req.input.size(), pieces.size());
+        } else {
+            pieces.push_back(req.input);
+        }
+
         struct qt_tts_params p;
         qt_tts_default_params(&p);
-        p.text = req.input.c_str();
         p.lang = req.language.empty() ? lang.c_str() : req.language.c_str();
         // Capped at 24 s (the upstream default): one codec decode over a
         // longer block reserves GBs of VRAM and ggml aborts on OOM (a
@@ -163,12 +368,32 @@ int main(int argc, char ** argv) {
         };
         p.on_chunk_user_data = (void *) sink_ptr;
 
-        struct qt_audio out = {};
-        enum qt_status  rc  = qt_synthesize(q, &p, &out);
-        qt_audio_free(&out);
-        if (rc != QT_STATUS_OK) {
-            err = qt_last_error();
-            return (int) rc;
+        // Several pieces : route the audio through the join trimmer (about
+        // 0.30 s kept at the end of a piece + 0.15 s at the start of the
+        // next, like a pause between sentences). One piece : untouched.
+        join_trimmer trim;
+        trim.out        = &sink;
+        trim.trail_keep = 24000 * 30 / 100;
+        trim.lead_keep  = 24000 * 15 / 100;
+        if (pieces.size() > 1) {
+            p.on_chunk = [](const float * s, int ns, void * u) -> bool {
+                return static_cast<join_trimmer *>(u)->push(s, ns);
+            };
+            p.on_chunk_user_data = (void *) &trim;
+        }
+        for (size_t k = 0; k < pieces.size(); k++) {
+            p.text = pieces[k].c_str();
+            trim.begin_piece(k == 0, k + 1 == pieces.size());
+            struct qt_audio out = {};
+            enum qt_status  rc  = qt_synthesize(q, &p, &out);
+            qt_audio_free(&out);
+            if (rc == QT_STATUS_OK && pieces.size() > 1 && !trim.end_piece()) {
+                rc = QT_STATUS_CANCELLED;
+            }
+            if (rc != QT_STATUS_OK) {
+                err = qt_last_error();
+                return (int) rc;
+            }
         }
         return 0;
     };

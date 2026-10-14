@@ -97,7 +97,7 @@ struct codec_chunked_decoder_stream {
     int                               left_ctx_frames;
     int                               emit_start_frame;
     // Size of the next emit. Starts at first_chunk_frames (progressive
-    // start: low time to first audio) and doubles after each emit up to
+    // start: low time to first audio) and grows x4 after each emit up to
     // chunk_frames ; equals chunk_frames when the progressive start is off.
     int                               next_chunk;
     // Set true when an emit returned false because the on_chunk callback
@@ -133,7 +133,15 @@ struct codec_chunked_decoder_stream {
             if (!emit_one(pc, emit_start_frame + next_chunk, cb, cb_ud)) {
                 return false;
             }
-            next_chunk = next_chunk * 2 < chunk_frames ? next_chunk * 2 : chunk_frames;
+            // Growth x2 on the first step, x4 after (2, 4, 16, 64, 256, cap):
+            // each emit re-decodes up to left_ctx_frames of context, so fewer
+            // emits = less codec work. The first step stays x2 because the
+            // first chunk is tiny (160 ms of audio) and a x4 second chunk
+            // would arrive about when it ran out ; past that the audio
+            // already sent covers the next chunk with margin while RTF is
+            // well under 1/3 (bench_stream.py min_slack_ms).
+            const int growth = (emit_start_frame == next_chunk) ? 2 : 4;
+            next_chunk       = next_chunk * growth < chunk_frames ? next_chunk * growth : chunk_frames;
         }
         return true;
     }

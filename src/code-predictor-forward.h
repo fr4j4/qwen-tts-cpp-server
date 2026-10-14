@@ -44,6 +44,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 struct CodePredictorOutput {
@@ -243,6 +244,7 @@ static bool code_predictor_run(const CodePredictorWeights * cw,
     ggml_backend_sched_reset(sched);
     if (!ggml_backend_sched_alloc_graph(sched, gf)) {
         fprintf(stderr, "[CodePredictor] FATAL: graph allocation failed\n");
+        qt_note_alloc_failure();
         ggml_backend_sched_reset(sched);
         ggml_free(gctx);
         return false;
@@ -295,6 +297,22 @@ static bool code_predictor_run(const CodePredictorWeights * cw,
 // Read one row of an embedding table to f32. Reads from the backend
 // (the predictor weights live there) via ggml_backend_tensor_get,
 // dispatched through ggml_get_type_traits so quants are accepted.
+// Host mirrors of embedding tables: backend tensor -> the same bytes in
+// the GGUF mmap. Registered once at load (pipeline_tts_load) for the
+// codec embedding tables, so the per-frame row lookups below read host
+// memory instead of a synchronous device -> host copy per row (16 per
+// frame on GPU). Same bytes, same to_float: bit exact.
+static std::unordered_map<const struct ggml_tensor *, const uint8_t *> & embed_host_mirrors() {
+    static std::unordered_map<const struct ggml_tensor *, const uint8_t *> m;
+    return m;
+}
+
+static void embed_register_host_mirror(const struct ggml_tensor * t, const void * host) {
+    if (t && host) {
+        embed_host_mirrors()[t] = (const uint8_t *) host;
+    }
+}
+
 static void embed_row_from_backend(struct ggml_tensor * t, int row_id, int dim, float * dst) {
     if (t->ne[0] != dim) {
         qt_throw("[CodePredictor] embed dim mismatch %lld vs %d", (long long) t->ne[0], dim);
@@ -303,13 +321,24 @@ static void embed_row_from_backend(struct ggml_tensor * t, int row_id, int dim, 
         qt_throw("[CodePredictor] row %d out of range (vocab=%lld)", row_id, (long long) t->ne[1]);
     }
     const size_t row_bytes = ggml_row_size(t->type, dim);
+    const auto & mirrors   = embed_host_mirrors();
+    const auto   it        = mirrors.find(t);
+    const uint8_t * host   = it != mirrors.end() ? it->second + (size_t) row_id * row_bytes : nullptr;
     if (t->type == GGML_TYPE_F32) {
-        ggml_backend_tensor_get(t, dst, (size_t) row_id * row_bytes, row_bytes);
+        if (host) {
+            std::memcpy(dst, host, row_bytes);
+        } else {
+            ggml_backend_tensor_get(t, dst, (size_t) row_id * row_bytes, row_bytes);
+        }
         return;
     }
     const struct ggml_type_traits * tt = ggml_get_type_traits(t->type);
     if (!tt || !tt->to_float) {
         qt_throw("[CodePredictor] unsupported embed dtype %d", (int) t->type);
+    }
+    if (host) {
+        tt->to_float(host, dst, dim);
+        return;
     }
     std::vector<uint8_t> tmp(row_bytes);
     ggml_backend_tensor_get(t, tmp.data(), (size_t) row_id * row_bytes, row_bytes);

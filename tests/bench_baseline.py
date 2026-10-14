@@ -94,7 +94,9 @@ def main():
     ap.add_argument("--talker", default="qwen-talker-0.6b-customvoice-Q4_K_M.gguf")
     ap.add_argument("--codec", default="qwen-tokenizer-12hz-Q4_K_M.gguf")
     ap.add_argument("--log", default=None, help="log del server (default: /tmp)")
+    ap.add_argument("--extra", default="{}", help='campos JSON extra por petición, p. ej. \'{"instructions": "..."}\'')
     a = ap.parse_args()
+    extra = json.loads(a.extra)
 
     log_path = a.log or f"/tmp/qwen-baseline-{a.label}.log"
     logf = open(log_path, "w")
@@ -115,7 +117,7 @@ def main():
         print(json.dumps({"label": a.label, "loaded": loaded}), flush=True)
 
         # Warmup descartado (CUDA init / primeras capturas de grafo).
-        run_once("127.0.0.1", a.port, "Hola.", a.voice, a.seed)
+        run_once("127.0.0.1", a.port, "Hola.", a.voice, a.seed, extra=extra)
 
         # CPU en reposo.
         t0, w0 = thread_ticks(proc.pid), time.perf_counter()
@@ -130,7 +132,7 @@ def main():
                 logf.flush()
                 start = os.path.getsize(log_path)
                 ta, wa = thread_ticks(proc.pid), time.perf_counter()
-                r = run_once("127.0.0.1", a.port, text, a.voice, a.seed)
+                r = run_once("127.0.0.1", a.port, text, a.voice, a.seed, extra=extra)
                 wall = time.perf_counter() - wa
                 cpu, top, busy = cpu_delta(ta, thread_ticks(proc.pid), wall)
                 time.sleep(0.2)

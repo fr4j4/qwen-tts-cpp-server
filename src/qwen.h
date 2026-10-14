@@ -323,7 +323,7 @@ struct qt_tts_params {
 
     // ABI v3. Progressive streaming start (streaming path only). When > 0 the
     // first audio chunk is emitted after this many codec frames, and
-    // each following chunk doubles in size up to codec_chunk_sec, so the
+    // each following chunk grows x4 in size up to codec_chunk_sec, so the
     // first audio leaves after ~first frames instead of a full chunk.
     // 0 keeps every chunk codec_chunk_sec long (upstream framing).
     int codec_first_chunk_frames;
@@ -364,6 +364,11 @@ QT_API int qt_n_speakers(const struct qt_context * q);
 // Name of speaker i, valid for i in [0, qt_n_speakers). Returns NULL when
 // i is out of range. The pointer stays valid until qt_free. UTF-8.
 QT_API const char * qt_speaker_name(const struct qt_context * q, int i);
+
+// Language labels the loaded model accepts in qt_tts_params.lang, besides
+// "auto" (matched case-insensitively). Pointers stay valid until qt_free.
+QT_API int          qt_n_languages(const struct qt_context * q);
+QT_API const char * qt_language_name(const struct qt_context * q, int i);
 
 // 1 when the talker runs on a GPU backend, 0 on CPU (or a NULL handle).
 // Lets a host pick backend dependent defaults (e.g. stream framing).

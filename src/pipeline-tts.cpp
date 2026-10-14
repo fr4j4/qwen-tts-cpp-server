@@ -159,6 +159,26 @@ bool pipeline_tts_load(PipelineTTS * pt,
         return false;
     }
 
+    // Codec embedding tables read by the predictor every frame: point the
+    // row lookups at the GGUF mmap (same bytes) when type and shape match,
+    // so they skip a device -> host copy per row.
+    {
+        auto mirror = [&](struct ggml_tensor * t, const char * name) {
+            struct ggml_tensor * meta = ggml_get_tensor(pt->gguf_talker.meta, name);
+            const void *         data = gf_get_data(pt->gguf_talker, name);
+            if (t && meta && data && meta->type == t->type && ggml_nbytes(meta) == ggml_nbytes(t)) {
+                embed_register_host_mirror(t, data);
+            }
+        };
+        mirror(pt->talker.codec_embedding, "talker.codec_embd.weight");
+        for (size_t g = 0; g < pt->code_predictor.codec_embedding.size(); g++) {
+            char name[64];
+            snprintf(name, sizeof(name), "code_pred.codec_embd.%zu.weight", g);
+            mirror(pt->code_predictor.codec_embedding[g], name);
+        }
+        qt_log(QT_LOG_INFO, "[Pipeline] embedding host mirrors: %zu tables", embed_host_mirrors().size());
+    }
+
     // Speaker encoder is only present in Base checkpoints. Treat absence
     // as a soft condition: voice clone path stays disabled, base-direct
     // synthesis still works.
@@ -650,7 +670,7 @@ qt_status pipeline_tts_synthesize(PipelineTTS *                pt,
     // emit as soon as chunk_frames new frames have accumulated since
     // the previous emit boundary ; flush drains the tail at EOS. With a
     // progressive start (ABI v3) the first emit fires after
-    // codec_first_chunk_frames frames and the size doubles up to
+    // codec_first_chunk_frames frames and the size grows x4 up to
     // chunk_frames.
     codec_chunked_decoder_stream stream;
     if (streaming) {

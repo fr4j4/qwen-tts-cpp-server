@@ -69,6 +69,18 @@ void qt_set_error_v(const char * fmt, va_list ap) {
     std::vsnprintf(g_last_error.data(), static_cast<size_t>(needed) + 1, fmt, ap);
 }
 
+static thread_local bool g_alloc_failed = false;
+
+void qt_note_alloc_failure(void) {
+    g_alloc_failed = true;
+}
+
+bool qt_take_alloc_failure(void) {
+    const bool v   = g_alloc_failed;
+    g_alloc_failed = false;
+    return v;
+}
+
 void qt_set_error(const char * fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -529,7 +541,13 @@ enum qt_status qt_synthesize(struct qt_context * q, const struct qt_tts_params *
     // crosses the extern "C" boundary.
     try {
         const int64_t resolved_seed = qt_resolve_seed(params->seed);
-        return pipeline_tts_synthesize(&q->pt, &q->tok, params, resolved_seed, out);
+        qt_take_alloc_failure();
+        enum qt_status rc = pipeline_tts_synthesize(&q->pt, &q->tok, params, resolved_seed, out);
+        if (rc == QT_STATUS_GENERATE_FAILED && qt_take_alloc_failure()) {
+            qt_set_error("out of device memory during synthesis (graph allocation failed); retry or use a shorter text");
+            rc = QT_STATUS_OOM;
+        }
+        return rc;
     } catch (const std::exception & e) {
         qt_set_error("%s", e.what());
         qt_log(QT_LOG_ERROR, "[Qwen] %s", e.what());
@@ -555,6 +573,17 @@ int qt_n_speakers(const struct qt_context * q) {
         return 0;
     }
     return (int) q->pt.speakers.size();
+}
+
+int qt_n_languages(const struct qt_context * q) {
+    return q ? (int) q->pt.languages.size() : 0;
+}
+
+const char * qt_language_name(const struct qt_context * q, int i) {
+    if (!q || i < 0 || i >= (int) q->pt.languages.size()) {
+        return NULL;
+    }
+    return q->pt.languages[(size_t) i].name.c_str();
 }
 
 int qt_has_gpu(const struct qt_context * q) {

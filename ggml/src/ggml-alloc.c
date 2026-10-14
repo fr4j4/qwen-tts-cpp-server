@@ -939,6 +939,12 @@ static bool ggml_gallocr_reserve_n_impl(
                 galloc->buffers[i] = ggml_vbuffer_alloc(galloc->bufts[i], galloc->buf_tallocs[i], GGML_BACKEND_BUFFER_USAGE_COMPUTE);
                 if (galloc->buffers[i] == NULL) {
                     GGML_LOG_ERROR("%s: failed to allocate %s buffer of size %zu\n", __func__, ggml_backend_buft_name(galloc->bufts[i]), new_size);
+                    // [qwen-tts] the old buffer is already freed and node/leaf
+                    // allocs describe the graph that did not fit : forget them
+                    // so the next alloc_graph reserves again instead of
+                    // placing tensors into a NULL buffer (GGML_ASSERT abort).
+                    galloc->n_nodes = 0;
+                    galloc->n_leafs = 0;
                     return false;
                 }
             }

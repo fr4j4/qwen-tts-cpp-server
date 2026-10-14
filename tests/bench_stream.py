@@ -10,6 +10,9 @@ response_format=pcm:
   - rtf     : total_ms / audio_s
   - chunks  : número de lecturas de red con datos y su cronología
   - md5     : md5 del PCM (determinismo con seed fija)
+  - min_slack_ms: margen mínimo de audio por delante de la reproducción,
+              suponiendo que el cliente reproduce desde el primer byte.
+              Negativo = el audio llegó tarde (corte audible).
 
 Una línea JSON por petición en stdout. Opcionalmente guarda el PCM.
 
@@ -75,6 +78,16 @@ def run_once(host, port, text, voice, seed, save=None, timeout=600, extra=None):
         else:
             bursts[-1][1] = acc
         last = ms
+    # Margen de reproducción: antes de cada ráfaga, cuánto audio ya enviado
+    # queda por sonar si la reproducción empezó con el primer byte.
+    min_slack = None
+    if t_first is not None and len(bursts) > 1:
+        prev_audio = 0.0
+        for b in bursts:
+            if prev_audio > 0:
+                slack = prev_audio * 1000 - (b[0] - bursts[0][0])
+                min_slack = slack if min_slack is None else min(min_slack, slack)
+            prev_audio = b[1] / (SR * BYTES_PER_SAMPLE)
     return {
         "chars": len(text),
         "hdr_ms": round((t_hdr - t0) * 1000, 1),
@@ -85,6 +98,7 @@ def run_once(host, port, text, voice, seed, save=None, timeout=600, extra=None):
         "ttfb_frac": round((t_first - t0) * 1000 / total_ms, 3) if t_first else None,
         "bursts": [{"t_ms": b[0], "audio_s": round(b[1] / (SR * BYTES_PER_SAMPLE), 2)} for b in bursts],
         "md5": md5.hexdigest(),
+        "min_slack_ms": round(min_slack, 1) if min_slack is not None else None,
     }
 
 

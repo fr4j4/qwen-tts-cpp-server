@@ -320,6 +320,133 @@ Los cambios de audio de la fase 1 quedan **aprobados por oído**.
 
 `tests/regression.sh` después: GPU 36/36 (con ASR); CPU 30/30 (sin ASR) con md5 idénticos a la fase 0 (corto `ae21234d…`, medio `9e59e8cb…`, largo `ee31b22b…`): en CPU el audio no cambia.
 
+## Fase 2 — costo por frame, CPU y robustez (rama `claude/fase-2-costo-por-frame`)
+
+Misma máquina, modelos, textos, voz y seed. "Fase 1" = cifras de la sección
+anterior; "Fase 2" = `build-gpu/` al final de la fase, GPU ociosa, medianas de 3.
+
+### GPU, 0.6B CustomVoice
+
+| texto | primer byte F1 → **F2** | RTF F1 → **F2** | CodecDecode F1 → F2 | margen mínimo F2 | CPU proceso |
+|---|---|---|---|---|---|
+| corto (7 s) | 57 → **58 ms** | 0,196 → **0,190** | 225 → 211 ms | 92 ms | 99 % |
+| medio (21 s) | 58 → **61 ms** | 0,180 → **0,171** | 552 → 386 ms | 102 ms | 100 % |
+| largo (62 s) | 68 → **69 ms** | 0,184 → **0,182** | 1134 → 1044 ms | 91 ms | 100 % |
+| extralargo (1170 chars) | — → **50-86 ms** | 0,187-0,192 → **0,169-0,172** | — | 102 ms | — |
+
+Referencia framing de 24 s (fase 0): RTF 0,173 / 0,164 / 0,180. El margen
+mínimo es cuánto audio va por delante de la reproducción si el cliente
+reproduce desde el primer byte (`bench_stream.py`, `min_slack_ms`).
+
+### GPU, 1.7B VoiceDesign (predictor exec)
+
+| texto | primer byte | RTF | CodePredictor | CPU proceso |
+|---|---|---|---|---|
+| corto (4 s) | 40 ms | 0,158 | 6,36 ms/frame | 99 % |
+| medio (21 s) | 49 ms | 0,150 | 6,35 ms/frame | 100 % |
+
+Meta del roadmap para el 1.7B (RTF ≤ 0,15): **alcanzada en medio**, 0,158 en
+el texto corto.
+
+### Qué se hizo y qué dio
+
+1. **C2: modo de espera de CUDA** (`GGML_CUDA_SCHEDULE=auto|spin|yield|blocking`,
+   default auto). Con `blocking`:
+
+   | modelo | CPU auto → blocking | RTF auto → blocking |
+   |---|---|---|
+   | 1.7B (predictor exec) | 98-100 % → **27-28 %** | 0,160-0,169 → 0,188-0,198 |
+   | 0.6B (predictor legacy) | ~100 % → 78-86 % | 0,179-0,197 → 0,214-0,228 |
+
+   Refina la hipótesis (b) de la fase 0: en el 1.7B el núcleo sí se va en
+   espera activa; en el 0.6B se va sobre todo en reconstruir los grafos del
+   predictor legacy (gated por el NaN de FINDINGS Bug 3), así que L10 también
+   es palanca de CPU. El default queda en `auto` (mejor latencia);
+   `blocking` sirve si la máquina se comparte con otras cargas.
+2. **L5: crecimiento de chunks x2 y luego x4** (2, 4, 16, 64, 256, tope). El
+   codec cuesta ~1 ms por frame decodificado (lineal; build y alloc del grafo
+   ~0,5 ms por llamada, medido con una sonda temporal), y cada emit
+   re-decodifica hasta 6 s de contexto. Menos emits = menos contexto. Recupera
+   ~60-100 % del RTF perdido en la fase 1. El primer paso queda en x2: con x4
+   directo el 2o chunk llegaba justo cuando se acababa el primero (margen
+   -9 ms con `blocking`).
+3. **L8: embeddings del predictor desde el mmap del GGUF** en vez de 16 copias
+   device→host por frame. Bit-exacto (md5 idéntico con y sin, en 0.6B y
+   1.7B). 1.7B: CodePredictor 6,49 → 6,34 ms/frame (-2,3 %). 0.6B: dentro del
+   ruido. **L11 descartado**: el embedding del talker ya se arma en host desde
+   el mmap (HostCompose 0,06 ms/frame).
+4. **Robustez**:
+   - `voice`/`language` inválidos → **HTTP 400** con la lista de valores
+     aceptados, antes de abrir el stream (antes: 200 con cuerpo vacío).
+   - **OOM de VRAM → HTTP 503** (`QT_STATUS_OOM`) en vez de `abort()`. Eran
+     dos bugs en el ggml vendido (`ggml_backend_sched_alloc_splits` ignoraba
+     un reserve fallido; tras el fallo el gallocr no re-reservaba). Verificado
+     forzando un bloque de codec de 6,8 GB: wav → 503 dos veces seguidas, el
+     server sigue vivo y las peticiones normales posteriores dan el mismo
+     md5. En pcm el 200 ya salió cuando ocurre el OOM: el cuerpo queda vacío.
+   - **Textos largos por piezas de oraciones** (`--split-chars`, default 800
+     bytes, piezas de hasta ~400). `extralargo` con 6 seeds:
+
+     | | audio | recall ASR | RTF |
+     |---|---|---|---|
+     | sin partir | 67-143 s | 0,69-0,995 (seed 4: 0,69) | 0,187-0,192 |
+     | por oraciones | 92-109 s | 0,98-0,995 en 5/6 (seed 6: 0,85) | 0,169-0,172 |
+
+     Más estable y ~10 % más rápido (cada pieza queda dentro de la ventana
+     del exec), pero no elimina el riesgo. Ojo: el "divaga sin EOS" de la
+     fase 0 fue en legacy puro con seed 42; con el camino actual y seed 42
+     el texto sin partir también termina bien.
+
+### Qué cambia el audio (A/B)
+
+- `02-crecimiento-*`: framing x2 (fase 1) vs x2+x4. Mismos códigos; sólo
+  cambian las uniones del codec. Sin clics; SNR vs un bloque 31,6 / 33,6 dB
+  (corto / medio), antes 34,6 / 32,7 dB.
+- `03-extralargo-*`: sin partir vs por oraciones (seed 42). Cambian los
+  códigos (cada pieza es una síntesis nueva) y hay una pausa natural entre
+  piezas.
+- C2, L8, la validación y el OOM no cambian el audio (md5 idénticos).
+
+A/B por oído (2026-10-14, usuario):
+
+| prueba | veredicto |
+|---|---|
+| Crecimiento x4, corto (7 s) | indistinguibles |
+| Crecimiento x4, medio (21 s) | indistinguibles |
+| Crecimiento x4, largo (62 s) | indistinguibles |
+| Extralargo por oraciones (1170 caracteres) | **se notan las transiciones** entre piezas |
+
+El crecimiento x4 queda aprobado. El split por oraciones funciona (lee todo)
+pero sus uniones eran audibles.
+
+**Ajuste de las uniones** (`join_trimmer` en `tools/tts-server.cpp`):
+
+- Diagnóstico: no había cortes abruptos (RMS ~0 a ambos lados de cada
+  unión); el problema era la pausa. Cada pieza termina con el silencio que
+  deja el modelo tras EOS y la siguiente arranca con su propio silencio
+  inicial, así que las uniones medían **1,97 / 1,04 / 1,30 s** de silencio
+  contra 0,4-0,8 s entre oraciones dentro de una pieza.
+- Arreglo: con 2+ piezas, el server deja como máximo 0,30 s de silencio al
+  final de una pieza y 0,15 s al inicio de la siguiente. Corta dentro del
+  silencio (bloques de 10 ms bajo -44 dBFS) con un fade de 5 ms. Resultado:
+  **0,45 / 0,45 / 0,45 s** en las tres uniones (seed 42, 105,4 → 102,5 s).
+  La generación es idéntica (mismas piezas, mismos códigos); el silencio
+  antes de la primera voz de cada pieza pasa directo, así que el primer byte
+  no cambia (62-104 ms con 7 seeds).
+- Descartado: piezas más largas (3/4 de `--split-chars`, 3 piezas en vez de
+  4) para tener menos uniones. Saltaban texto en 2 de 6 seeds (recall 0,73 y
+  0,82), así que las piezas siguen en ≤ 400 bytes.
+- Textos bajo el umbral no pasan por el filtro: md5 de corto/medio/largo
+  idénticos. Regresión GPU 41/41 con ASR.
+- A/B por oído de este ajuste (2026-10-14, usuario): **suena natural**. Los
+  cambios de audio de la fase 2 quedan aprobados.
+
+Regresión al final de la fase: GPU **41/41** con ASR (la secuencia hostil
+suma `extralargo`; se exige un EOS por pieza). CPU **34/34** (sin ASR), con
+md5 de corto/medio/largo idénticos a la fase 0. En CPU el split resultó
+necesario: con un binario sin él, `extralargo` (seed 42) llegó al techo de
+2048 frames sin EOS (163,8 s); partido, 4 piezas con EOS y 93,6 s.
+
 ## Archivos de esta fase
 
 - `tests/bench_stream.py`: cliente de streaming (primer byte, RTF, ráfagas, md5).
