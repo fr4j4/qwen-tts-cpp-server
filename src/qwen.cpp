@@ -557,6 +557,17 @@ int qt_n_speakers(const struct qt_context * q) {
     return (int) q->pt.speakers.size();
 }
 
+int qt_n_languages(const struct qt_context * q) {
+    return q ? (int) q->pt.languages.size() : 0;
+}
+
+const char * qt_language_name(const struct qt_context * q, int i) {
+    if (!q || i < 0 || i >= (int) q->pt.languages.size()) {
+        return NULL;
+    }
+    return q->pt.languages[(size_t) i].name.c_str();
+}
+
 int qt_has_gpu(const struct qt_context * q) {
     return (q && q->pt.bp.has_gpu) ? 1 : 0;
 }

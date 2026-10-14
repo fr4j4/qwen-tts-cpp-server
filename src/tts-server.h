@@ -21,6 +21,7 @@
 #include "audio-io.h"
 #include "yyjson.h"
 
+#include <cctype>
 #include <cmath>
 #include <csignal>
 #include <cstdint>
@@ -52,6 +53,7 @@ using tts_sink = std::function<bool(const float * samples, int n_samples)>;
 struct tts_backend {
     std::string              model_id;  // reported by GET /v1/models
     std::vector<std::string> voices;    // reported by GET /v1/voices, may be empty
+    std::vector<std::string> languages; // accepted "language" values besides "auto", may be empty
     // Run synthesis. When the request streams, the adapter routes the ABI
     // on_chunk to sink ; otherwise it pushes the whole buffer once. Returns
     // the ABI status (0 on success), and fills err with the ABI message on
@@ -165,6 +167,43 @@ static bool tts_parse_request(const std::string & body, tts_request & req, std::
     return true;
 }
 
+// Case-insensitive membership, matching how the prompt builder resolves
+// speakers and languages.
+static bool tts_in_list_ci(const std::string & v, const std::vector<std::string> & list) {
+    auto lc = [](std::string s) {
+        for (char & c : s) {
+            c = (char) std::tolower((unsigned char) c);
+        }
+        return s;
+    };
+    const std::string needle = lc(v);
+    for (const std::string & e : list) {
+        if (lc(e) == needle) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Reject an unknown voice or language before any audio is produced : once
+// the stream starts the 200 header is already out and a failure can only
+// end in an empty body.
+static bool tts_validate_request(const tts_backend & be, const tts_request & req, std::string & err) {
+    if (!req.voice.empty() && !be.voices.empty() && !tts_in_list_ci(req.voice, be.voices)) {
+        err = "unknown voice '" + req.voice + "' (see GET /v1/voices)";
+        return false;
+    }
+    if (!req.language.empty() && !be.languages.empty() && !tts_in_list_ci(req.language, { "auto" }) &&
+        !tts_in_list_ci(req.language, be.languages)) {
+        err = "unknown language '" + req.language + "'; accepted: auto";
+        for (const std::string & l : be.languages) {
+            err += ", " + l;
+        }
+        return false;
+    }
+    return true;
+}
+
 // Map an ABI status to an HTTP code. The two ABIs share numeric values:
 // -1 invalid params, -2 mode/instruct invalid -> client error ; the rest
 // are server side failures.
@@ -181,7 +220,7 @@ static int tts_status_to_http(int rc) {
 static void tts_handle_speech(const tts_backend & be, const httplib::Request & http_req, httplib::Response & res) {
     tts_request req;
     std::string err;
-    if (!tts_parse_request(http_req.body, req, err)) {
+    if (!tts_parse_request(http_req.body, req, err) || !tts_validate_request(be, req, err)) {
         tts_json_error(res, 400, "invalid_request_error", err.c_str());
         return;
     }

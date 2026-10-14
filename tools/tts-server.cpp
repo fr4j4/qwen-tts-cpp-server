@@ -131,6 +131,9 @@ int main(int argc, char ** argv) {
     for (int i = 0; i < n; i++) {
         be.voices.push_back(qt_speaker_name(q, i));
     }
+    for (int i = 0; i < qt_n_languages(q); i++) {
+        be.languages.push_back(qt_language_name(q, i));
+    }
 
     // The adapter always drives the streaming pipeline : on_chunk routes to
     // the shared sink, which either streams to the socket (pcm) or fills a
