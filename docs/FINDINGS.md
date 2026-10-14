@@ -104,6 +104,12 @@ NVIDIA 595.91, Arch Linux, nvcc 12.4) con los modelos Q4_K_M oficiales.
 
 ### Bug 4 — v0.24 aborta duro ante OOM (deuda conocida)
 
+> ✅ **Corregido en fase 2** (2026-10-14, `claude/fase-2-costo-por-frame`):
+> dos bugs en el ggml vendido (`ggml_backend_sched_alloc_splits` ignoraba
+> un `ggml_gallocr_reserve_n` fallido, y tras el fallo el gallocr no volvía
+> a reservar). Ahora un OOM devuelve `QT_STATUS_OOM` → HTTP 503 y el
+> proceso sigue vivo. Ver `docs/BASELINE.md`, fase 2.
+
 - **Síntoma**: `cudaMalloc failed: out of memory` durante un prefill
   grande → `GGML_ASSERT` → `abort()` (SIGABRT) → el server **muere**
   en vez de responder un error HTTP. El pin viejo degradaba mejor.
@@ -216,7 +222,7 @@ Los execs quedaron **ON por defecto** (opt-out) tras validar la campaña: si fal
    mientras `n_past < W` y luego sigue legacy sobre el mismo KV (sin wrap).
    A/B por oído aprobado (2026-10-14), junto con los chunks progresivos
    del streaming (indistinguibles en textos de 7, 21 y 62 s).
-3. **OOM → HTTP 503** (§2 Bug 4).
+3. **OOM → HTTP 503** (§2 Bug 4). ✅ hecho en fase 2.
 4. Soak producción → monitorizar execs en producción (defaults ya volteados a ON; el soak ES producción).
 5. Warmup en el provider Python (esconde ~2.3 s de CUDA init) y
    streaming PCM (TTFA real ~35 ms ya existe; kali-core pide wav
