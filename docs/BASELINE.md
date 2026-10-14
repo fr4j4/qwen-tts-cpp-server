@@ -407,6 +407,18 @@ el texto corto.
   piezas.
 - C2, L8, la validación y el OOM no cambian el audio (md5 idénticos).
 
+A/B por oído (2026-10-14, usuario):
+
+| prueba | veredicto |
+|---|---|
+| Crecimiento x4, corto (7 s) | indistinguibles |
+| Crecimiento x4, medio (21 s) | indistinguibles |
+| Crecimiento x4, largo (62 s) | indistinguibles |
+| Extralargo por oraciones (1170 caracteres) | **se notan las transiciones** entre piezas |
+
+El crecimiento x4 queda aprobado. El split por oraciones funciona (lee todo)
+pero sus uniones son audibles: queda pendiente de ajuste.
+
 Regresión al final de la fase: GPU **41/41** con ASR (la secuencia hostil
 suma `extralargo`; se exige un EOS por pieza). CPU **34/34** (sin ASR), con
 md5 de corto/medio/largo idénticos a la fase 0. En CPU el split resultó
