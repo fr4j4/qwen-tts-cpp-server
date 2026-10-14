@@ -208,6 +208,104 @@ ve un cliente HTTP** con los defaults actuales.
 md5 GPU (seed 42, ggml v0.24): corto `fa6e0764…`, medio `392db29d…`
 (idénticos exec/legacy), largo `645ac909…` (exec, truncado) / `244e3c13…` (legacy).
 
+## Fase 1 — antes / después (rama `claude/fase-1-streaming`)
+
+Misma máquina, modelos, textos, voz y seed. "Antes" = línea base de arriba
+(GPU defaults). "Después" = `build-gpu/` compilada con `scripts/build-gpu.sh`
+corregido, defaults del server nuevos. Primer byte con servidor caliente
+(medianas de 3).
+
+### GPU
+
+| texto | primer byte antes | **primer byte después** | RTF antes | RTF después | audio antes → después | CPU proceso |
+|---|---|---|---|---|---|---|
+| corto | 1217 ms | **57 ms** | 0,173 | 0,196 | 7,04 → 7,04 s | 99 % → 99 % |
+| medio | 3501 ms | **58 ms** | 0,164 | 0,180 | 21,36 → 21,36 s | 100 % → 100 % |
+| largo | 3971 ms | **68 ms** | 0,166 ⚠ truncado | 0,184 | 30,0 ⚠ → 62,1 s (recall 0,41 → 1,0) | 100 % → 100 % |
+
+Primera petición tras levantar el server (texto corto): 179-196 ms sin
+warmup → **39-57 ms** con warmup (el arranque tarda +1,0 s).
+
+Desglose `[Perf]` después (medianas): Prefill 9-22 ms, TTFA 29-44 ms,
+TalkerDecode 2,2 ms/f (3,3 en largo: pasado W=512 sigue en legacy),
+CodePredictor ~10 ms/f, **CodecDecode 225 / 552 / 1134 ms** (antes 91 / 267
+/ 403): el arranque progresivo y los 6 s de contexto izquierdo
+re-decodifican contexto en cada emit. Es el costo del +6-13 % de RTF en
+textos cortos y medios; con `--left-context-sec 2` baja, pero el audio se
+aleja más de la decodificación en un bloque (ver abajo).
+
+Meta de la fase (< 150 ms de primer byte en GPU, servidor caliente):
+**cumplida** (57-68 ms).
+
+Hipótesis (b) sigue igual: un núcleo al 100 % mientras sintetiza (la fase 1
+no lo ataca).
+
+### CPU
+
+Defaults sin cambios en CPU (framing upstream: 24 s, 2 s de contexto),
+porque el codec domina (~60 ms/frame) y con RTF > 1 los decodes extra sólo
+alargan la síntesis. Medido con `corto`/`medio`:
+
+| config CPU | primer byte | RTF |
+|---|---|---|
+| default (`--first-chunk-frames 0 --left-context-sec 2`) | 11,7 s / 40,0 s | 1,65 / 1,71 |
+| `--first-chunk-frames 2 --left-context-sec 2` | 0,34 s / 0,57 s | 2,10 / 1,93 |
+| `--first-chunk-frames 8 --left-context-sec 2` | 1,03 s / 1,28 s | 2,03 / 1,85 |
+| `--first-chunk-frames 8 --left-context-sec 6` | 1,15 s / 1,35 s | 2,33 / 2,17 |
+
+`--threads 4 / 8 / 16` (corto, progresivo): RTF 2,79 / 2,53 / 2,64; el
+default (8 = núcleos físicos) sigue siendo el mejor en el 3700X.
+
+### Qué cambia el audio (para el A/B por oído)
+
+Muestras WAV en `samples/fase1/` (no versionadas, `*.wav` está en
+`.gitignore`):
+
+| archivo | qué es |
+|---|---|
+| `00-ventana-largo-ANTES-truncado.wav` | `largo` con la ventana circular W=512 (corta a mitad del texto) |
+| `00-ventana-largo-DESPUES.wav` | `largo` con el fix (exec hasta W, luego legacy) |
+| `00-ventana-largo-REFERENCIA-legacy.wav` | `largo` con `KALI_QWEN_TXEXEC=0` |
+| `01-chunks-{corto,medio,largo}-ANTES-24s.wav` | framing anterior (24 s, 2 s de contexto) |
+| `01-chunks-{corto,medio,largo}-DESPUES-progresivo.wav` | framing nuevo (2→4→8…, 6 s de contexto) |
+
+1. **Fix de la ventana**: cambia el audio sólo cuando `T_ctx + frames > 512`
+   (corto/medio: md5 idéntico al anterior). En `largo` el modelo ahora lee el
+   texto completo; los códigos difieren de legacy puro (62,1 s vs 58,4 s)
+   porque los primeros pasos van por el exec y el muestreo es caótico, pero
+   el recall ASR es 1,0 en ambos.
+2. **Chunks progresivos**: los códigos son idénticos; cambia cómo el codec
+   decodifica por tramos. `tests/chunk_equivalence.py` contra la
+   decodificación en un solo bloque: **sin clics** en ninguna unión (el salto
+   entre muestras en cada unión es del orden del de la referencia), SNR
+   global 24 dB con 2 s de contexto y **33-35 dB con 6 s** (12 s apenas
+   mejora). Las diferencias están repartidas dentro de cada tramo, no en las
+   uniones: vienen del contexto izquierdo más corto que la ventana de
+   atención del codec, el mismo efecto que ya tenía el framing upstream de
+   24 s en textos largos.
+3. **Robustez**: `chunk_sec` llega ahora desde el JSON, así que el server lo
+   topa en 24 s. Un bloque de 62 s pedía 4 GB de VRAM y ggml abortaba el
+   proceso (FINDINGS Bug 4).
+
+### Otros cambios de la fase 1
+
+- `language` en el JSON (`"spanish"`, `"english"`, …) llega al prompt
+  (verificado: `lang=spanish (id=2054)`). Un idioma inválido devuelve 200
+  con cuerpo vacío y el error sólo en el log, porque en streaming las
+  cabeceras salen antes de que el ABI lo rechace; ya pasaba igual con una
+  `voice` inválida.
+- Trazas `[Sample]`/`[Sample-CP]` sólo con `QWEN_DEBUG=1` (0 líneas por
+  defecto, 64 con debug).
+- `--threads N`, `--chunk-sec`, `--first-chunk-frames`, `--left-context-sec`,
+  `--no-warmup`; `KALI_QWEN_TX_WINDOW` para cambiar W del talker exec
+  (medido: W=1024/2048 hacen el largo ~10 % más rápido pero el medio 3-9 %
+  más lento; queda W=512).
+- Web UI: arranque de la reproducción con 250 ms de audio (antes 1 s).
+- `scripts/build-gpu.sh` compila con gcc 15 (elige g++-13 para nvcc 12.4).
+- ABI v3: `qt_tts_params.codec_first_chunk_frames` y `qt_has_gpu()`.
+
+`tests/regression.sh` después: GPU 36/36 (con ASR); CPU 30/30 (sin ASR) con md5 idénticos a la fase 0 (corto `ae21234d…`, medio `9e59e8cb…`, largo `ee31b22b…`): en CPU el audio no cambia.
+
 ## Archivos de esta fase
 
 - `tests/bench_stream.py`: cliente de streaming (primer byte, RTF, ráfagas, md5).
@@ -215,3 +313,4 @@ md5 GPU (seed 42, ggml v0.24): corto `fa6e0764…`, medio `392db29d…`
 - `tests/regression.sh`: FINDINGS §6 automatizado (+ golden y ASR opcionales).
 - `tests/asr_check.py`: recall de palabras por ASR (vosk).
 - `tests/texts/`: textos fijos `corto`, `medio`, `largo`, `extralargo`.
+- `tests/chunk_equivalence.py` (fase 1): streaming por chunks vs un bloque (SNR, clics en uniones).

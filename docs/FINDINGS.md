@@ -212,6 +212,8 @@ Los execs quedaron **ON por defecto** (opt-out) tras validar la campaña: si fal
    `T_ctx + frames > W` la ventana desaloja el prompt con el texto y el
    modelo deja de leer (texto de 739 chars: 30 s y recall ASR 0,41 vs
    58 s y 0,99 en legacy). Ver `docs/BASELINE.md`, hallazgo 1.
+   ✅ Corregido en fase 1 (`claude/fase-1-streaming`): el exec atiende
+   mientras `n_past < W` y luego sigue legacy sobre el mismo KV (sin wrap).
 3. **OOM → HTTP 503** (§2 Bug 4).
 4. Soak producción → monitorizar execs en producción (defaults ya volteados a ON; el soak ES producción).
 5. Warmup en el provider Python (esconde ~2.3 s de CUDA init) y
