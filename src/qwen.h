@@ -323,7 +323,7 @@ struct qt_tts_params {
 
     // ABI v3. Progressive streaming start (streaming path only). When > 0 the
     // first audio chunk is emitted after this many codec frames, and
-    // each following chunk doubles in size up to codec_chunk_sec, so the
+    // each following chunk grows x4 in size up to codec_chunk_sec, so the
     // first audio leaves after ~first frames instead of a full chunk.
     // 0 keeps every chunk codec_chunk_sec long (upstream framing).
     int codec_first_chunk_frames;

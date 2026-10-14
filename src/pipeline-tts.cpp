@@ -650,7 +650,7 @@ qt_status pipeline_tts_synthesize(PipelineTTS *                pt,
     // emit as soon as chunk_frames new frames have accumulated since
     // the previous emit boundary ; flush drains the tail at EOS. With a
     // progressive start (ABI v3) the first emit fires after
-    // codec_first_chunk_frames frames and the size doubles up to
+    // codec_first_chunk_frames frames and the size grows x4 up to
     // chunk_frames.
     codec_chunked_decoder_stream stream;
     if (streaming) {

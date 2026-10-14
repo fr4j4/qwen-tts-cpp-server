@@ -12,7 +12,8 @@ vez vs por chunks con 2 s de contexto izquierdo). Reporta:
     punto. Un clic aparece como salto >> referencia o SNR local baja.
 
 Las uniones se calculan con el mismo plan que el server: primer chunk de
---first frames, luego el doble, hasta --chunk frames (1 frame = 1920 muestras).
+--first frames, luego x2 una vez y x--growth (4) desde ahí, hasta --chunk
+frames (1 frame = 1920 muestras).
 
 Uso: tests/chunk_equivalence.py ref.pcm test.pcm --first 2 --chunk 300
 Sale con 1 si el SNR global < --min-snr o alguna unión parece un clic.
@@ -41,12 +42,12 @@ def snr_db(ref, test):
     return 10 * math.log10(sig / err)
 
 
-def joins(n_frames, first, chunk):
+def joins(n_frames, first, chunk, growth=4):
     out, pos, size = [], 0, first if 0 < first < chunk else chunk
     while pos + size < n_frames:
         pos += size
         out.append(pos)
-        size = min(size * 2, chunk)
+        size = min(size * (2 if len(out) == 1 else growth), chunk)
     return out
 
 
@@ -56,6 +57,7 @@ def main():
     ap.add_argument("test")
     ap.add_argument("--first", type=int, default=2)
     ap.add_argument("--chunk", type=int, default=300)
+    ap.add_argument("--growth", type=int, default=4)
     ap.add_argument("--min-snr", type=float, default=30.0)
     ap.add_argument("--win", type=int, default=960, help="muestras a cada lado de la unión (960 = 40 ms)")
     a = ap.parse_args()
@@ -65,7 +67,7 @@ def main():
     res["snr_db"] = round(snr_db(ref[:n], test[:n]), 2)
     bad = []
     rows = []
-    for f in joins(n // HOP, a.first, a.chunk):
+    for f in joins(n // HOP, a.first, a.chunk, a.growth):
         j = f * HOP
         lo, hi = max(1, j - a.win), min(n, j + a.win)
         local = snr_db(ref[lo:hi], test[lo:hi])

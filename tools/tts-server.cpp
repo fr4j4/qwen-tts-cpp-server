@@ -29,7 +29,7 @@ static void print_usage(const char * prog) {
             "  --clamp-fp16            Clamp hidden states to FP16 range\n"
             "  --chunk-sec <f>         Max streamed audio chunk in seconds (default and cap: 24.0)\n"
             "  --first-chunk-frames <n> Progressive start: first chunk after n codec frames,\n"
-            "                          doubling up to --chunk-sec (default: GPU 2, CPU 0 = off)\n"
+            "                          growing x4 up to --chunk-sec (default: GPU 2, CPU 0 = off)\n"
             "  --left-context-sec <f>  Codec left context per chunk in seconds (default: GPU 6.0, CPU 2.0)\n"
             "  --no-warmup             Skip the warmup synthesis before listening\n"
             "  --threads <n>           CPU threads for ggml (default: physical cores)\n",
