@@ -438,7 +438,8 @@ pero sus uniones eran audibles.
   0,82), así que las piezas siguen en ≤ 400 bytes.
 - Textos bajo el umbral no pasan por el filtro: md5 de corto/medio/largo
   idénticos. Regresión GPU 41/41 con ASR.
-- A/B por oído de este ajuste: pendiente (página "Prueba A/B Uniones").
+- A/B por oído de este ajuste (2026-10-14, usuario): **suena natural**. Los
+  cambios de audio de la fase 2 quedan aprobados.
 
 Regresión al final de la fase: GPU **41/41** con ASR (la secuencia hostil
 suma `extralargo`; se exige un EOS por pieza). CPU **34/34** (sin ASR), con
