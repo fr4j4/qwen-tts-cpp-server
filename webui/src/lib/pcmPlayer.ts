@@ -5,8 +5,8 @@
 // AudioBufferSourceNodes with per-source resamplers; the audio thread
 // overloads and the tail of the stream collapses into noise, while the
 // exact same bytes saved to a .wav play perfectly. So this player:
-//   1. Accumulates chunks (zero playback) until it holds MIN_START_SECONDS
-//      of audio — or the stream ends, whichever comes first.
+//   1. Accumulates chunks (zero playback) until it holds MIN_START_SAMPLES
+//      (250 ms) of audio — or the stream ends, whichever comes first.
 //   2. Starts with a single big source; later arrivals are appended in
 //      MAX_SOURCE_SECONDS blocks scheduled contiguously (no gaps, no
 //      pile-up: a block starts exactly when the previous ends).
@@ -15,8 +15,13 @@
 
 const SAMPLE_RATE = 24000
 
-/** Minimum buffered audio (samples) before playback starts (1 s). */
-export const MIN_START_SAMPLES = 24000
+/**
+ * Minimum buffered audio (samples) before playback starts (250 ms). The
+ * server streams with a progressive start (first chunk after 2 codec
+ * frames, then doubling), so 250 ms is reached at the second burst and
+ * the generator stays ~5x ahead of playback from there on (GPU).
+ */
+export const MIN_START_SAMPLES = 6000
 
 /** Max samples per scheduled source (10 s). */
 const MAX_SOURCE_SAMPLES = 24000 * 10
