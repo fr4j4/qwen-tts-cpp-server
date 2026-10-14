@@ -417,7 +417,28 @@ A/B por oído (2026-10-14, usuario):
 | Extralargo por oraciones (1170 caracteres) | **se notan las transiciones** entre piezas |
 
 El crecimiento x4 queda aprobado. El split por oraciones funciona (lee todo)
-pero sus uniones son audibles: queda pendiente de ajuste.
+pero sus uniones eran audibles.
+
+**Ajuste de las uniones** (`join_trimmer` en `tools/tts-server.cpp`):
+
+- Diagnóstico: no había cortes abruptos (RMS ~0 a ambos lados de cada
+  unión); el problema era la pausa. Cada pieza termina con el silencio que
+  deja el modelo tras EOS y la siguiente arranca con su propio silencio
+  inicial, así que las uniones medían **1,97 / 1,04 / 1,30 s** de silencio
+  contra 0,4-0,8 s entre oraciones dentro de una pieza.
+- Arreglo: con 2+ piezas, el server deja como máximo 0,30 s de silencio al
+  final de una pieza y 0,15 s al inicio de la siguiente. Corta dentro del
+  silencio (bloques de 10 ms bajo -44 dBFS) con un fade de 5 ms. Resultado:
+  **0,45 / 0,45 / 0,45 s** en las tres uniones (seed 42, 105,4 → 102,5 s).
+  La generación es idéntica (mismas piezas, mismos códigos); el silencio
+  antes de la primera voz de cada pieza pasa directo, así que el primer byte
+  no cambia (62-104 ms con 7 seeds).
+- Descartado: piezas más largas (3/4 de `--split-chars`, 3 piezas en vez de
+  4) para tener menos uniones. Saltaban texto en 2 de 6 seeds (recall 0,73 y
+  0,82), así que las piezas siguen en ≤ 400 bytes.
+- Textos bajo el umbral no pasan por el filtro: md5 de corto/medio/largo
+  idénticos. Regresión GPU 41/41 con ASR.
+- A/B por oído de este ajuste: pendiente (página "Prueba A/B Uniones").
 
 Regresión al final de la fase: GPU **41/41** con ASR (la secuencia hostil
 suma `extralargo`; se exige un EOS por pieza). CPU **34/34** (sin ASR), con
