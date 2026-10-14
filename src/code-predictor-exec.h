@@ -309,7 +309,7 @@ static bool code_predictor_exec_frame(CodePredictorExec *          ex,
         int   cg  = sample_top_k_p(ex->logits.data(), ex->vocab, temperature, top_k, top_p, 1.0f, nullptr, 0,
                                    seed, subseq_base + 1 + g, &u_g);
         if (subseq_base + 1 + g < 32) {
-            fprintf(stderr, "[Sample-CP] g=%d c=%d u=%.10f subseq=%lld\n", g, cg, (double) u_g,
+            qt_log(QT_LOG_DEBUG, "[Sample-CP] g=%d c=%d u=%.10f subseq=%lld", g, cg, (double) u_g,
                     (long long)(subseq_base + 1 + g));
         }
         if (cg < 0) {

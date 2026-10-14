@@ -67,6 +67,37 @@ fi
 
 # ggml is vendored in-tree (updated to v0.24.0); no submodule init needed.
 
+# Host compiler for nvcc. Each CUDA release caps the supported gcc major
+# (12.4-12.7: <= 13, 12.8-12.9: <= 14, 13.x: <= 15) ; a newer default g++
+# (e.g. gcc 15 on Ubuntu 25.10) makes nvcc abort with "unsupported GNU
+# version". Order: $CUDAHOSTCXX, then g++ if supported, then the newest
+# supported g++-N on PATH, else let nvcc use its own configured default.
+NVCC_VER=$("$NVCC" --version | sed -n 's/.*release \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+read -r NVCC_MAJ NVCC_MIN <<< "${NVCC_VER:-0 0}"
+if [ "$NVCC_MAJ" -ge 13 ]; then MAX_GCC=15
+elif [ "$NVCC_MAJ" -eq 12 ] && [ "$NVCC_MIN" -ge 8 ]; then MAX_GCC=14
+elif [ "$NVCC_MAJ" -eq 12 ] && [ "$NVCC_MIN" -ge 4 ]; then MAX_GCC=13
+else MAX_GCC=12
+fi
+HOST_CXX="${CUDAHOSTCXX:-}"
+if [ -z "$HOST_CXX" ]; then
+  GXX_MAJ=$(g++ -dumpversion 2>/dev/null | cut -d. -f1)
+  if [ -n "$GXX_MAJ" ] && [ "$GXX_MAJ" -le "$MAX_GCC" ]; then
+    HOST_CXX=$(command -v g++)
+  else
+    for v in $(seq "$MAX_GCC" -1 9); do
+      if command -v "g++-$v" &>/dev/null; then HOST_CXX=$(command -v "g++-$v"); break; fi
+    done
+  fi
+fi
+HOST_FLAG=()
+if [ -n "$HOST_CXX" ]; then
+  echo "nvcc $NVCC_MAJ.$NVCC_MIN (gcc <= $MAX_GCC): host compiler $HOST_CXX"
+  HOST_FLAG=(-DCMAKE_CUDA_HOST_COMPILER="$HOST_CXX")
+else
+  echo "WARN: no g++ <= $MAX_GCC found; letting nvcc pick its default host compiler"
+fi
+
 rm -rf build-gpu
 mkdir build-gpu
 cd build-gpu
@@ -79,7 +110,7 @@ cmake .. \
   -DGGML_CUDA_GRAPHS=ON \
   -DCMAKE_CUDA_COMPILER="$NVCC" \
   -DCMAKE_CUDA_ARCHITECTURES="$ARCHS" \
-  -DCMAKE_CUDA_HOST_COMPILER="$(command -v g++ 2>/dev/null || command -v c++)"
+  "${HOST_FLAG[@]}"
 
 cmake --build . --config Release -j "$(nproc)"
 

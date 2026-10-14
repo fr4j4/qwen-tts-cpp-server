@@ -96,18 +96,26 @@ struct codec_chunked_decoder_stream {
     int                               chunk_frames;
     int                               left_ctx_frames;
     int                               emit_start_frame;
+    // Size of the next emit. Starts at first_chunk_frames (progressive
+    // start: low time to first audio) and doubles after each emit up to
+    // chunk_frames ; equals chunk_frames when the progressive start is off.
+    int                               next_chunk;
     // Set true when an emit returned false because the on_chunk callback
     // requested a cancel. Stays false on decode failures so the caller
     // can route to QT_STATUS_CANCELLED vs QT_STATUS_GENERATE_FAILED on
     // a push_frame / flush negative return.
     bool                              cancelled;
 
-    void init(int K_, int chunk_frames_, int left_ctx_frames_) {
+    // first_chunk_frames_ <= 0 disables the progressive start (every emit
+    // is chunk_frames long, the upstream framing).
+    void init(int K_, int chunk_frames_, int left_ctx_frames_, int first_chunk_frames_ = 0) {
         K                = K_;
         T_so_far         = 0;
         chunk_frames     = chunk_frames_ < 1 ? 1 : chunk_frames_;
         left_ctx_frames  = left_ctx_frames_ < 0 ? 0 : left_ctx_frames_;
         emit_start_frame = 0;
+        next_chunk       = (first_chunk_frames_ > 0 && first_chunk_frames_ < chunk_frames) ? first_chunk_frames_
+                                                                                            : chunk_frames;
         cancelled        = false;
         by_k.assign((size_t) K, {});
     }
@@ -121,10 +129,11 @@ struct codec_chunked_decoder_stream {
         }
         T_so_far++;
 
-        while (T_so_far - emit_start_frame >= chunk_frames) {
-            if (!emit_one(pc, emit_start_frame + chunk_frames, cb, cb_ud)) {
+        while (T_so_far - emit_start_frame >= next_chunk) {
+            if (!emit_one(pc, emit_start_frame + next_chunk, cb, cb_ud)) {
                 return false;
             }
+            next_chunk = next_chunk * 2 < chunk_frames ? next_chunk * 2 : chunk_frames;
         }
         return true;
     }

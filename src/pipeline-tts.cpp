@@ -304,6 +304,12 @@ bool pipeline_tts_load(PipelineTTS * pt,
         // Opt-out: exec runs unless the env var is explicitly "0"
         // (unset or empty keeps it ON).
         const bool tx_wanted = !(tx_env && tx_env[0] == '0');
+        // KALI_QWEN_TX_WINDOW overrides the exec window W (KV rows the
+        // prebuilt graph attends; positions beyond fall back to legacy).
+        const char * w_env = getenv("KALI_QWEN_TX_WINDOW");
+        if (w_env && atoi(w_env) > 0) {
+            pt->tx_exec_window = atoi(w_env);
+        }
         if (tx_wanted && pt->use_flash_attn) {
             if (talker_exec_init(&pt->tx_exec, &pt->talker, &pt->talker_kv, pt->bp, pt->tx_exec_window,
                                  pt->clamp_fp16)) {
@@ -642,10 +648,14 @@ qt_status pipeline_tts_synthesize(PipelineTTS *                pt,
     // Streaming rolling decoder. Holds the K major codes buffer, the
     // emit cursor and the left context window. push_frame triggers an
     // emit as soon as chunk_frames new frames have accumulated since
-    // the previous emit boundary ; flush drains the tail at EOS.
+    // the previous emit boundary ; flush drains the tail at EOS. With a
+    // progressive start (ABI v3) the first emit fires after
+    // codec_first_chunk_frames frames and the size doubles up to
+    // chunk_frames.
     codec_chunked_decoder_stream stream;
     if (streaming) {
-        stream.init(num_codebooks, chunk_frames, left_ctx_frames);
+        const int first_frames = params->abi_version >= 3 ? params->codec_first_chunk_frames : 0;
+        stream.init(num_codebooks, chunk_frames, left_ctx_frames, first_frames);
     }
 
     for (int step = 0; step < params->max_new_tokens; step++) {
@@ -661,10 +671,13 @@ qt_status pipeline_tts_synthesize(PipelineTTS *                pt,
         const char *        step_dump = (params->dump_dir && step == 0) ? params->dump_dir : NULL;
         bool                ok;
         Timer               t_talker;
-        // [tx-sliding-window] Circular KV window: the exec writes row
-        // n_past % W, so there is no hard ceiling anymore — the exec
-        // handles every decode step (no legacy fallback mid-generation).
-        const bool tx_ok = pt->tx_exec_enabled && step > 0;
+        // The exec handles decode steps while the absolute position fits
+        // the window; past it the legacy path continues on the same KV
+        // cache (the exec writes rows n_past directly into talker_kv).
+        // The circular wrap (n_past % W) is NOT used: it evicts the oldest
+        // rows, i.e. the text prompt, and the model stops reading the text
+        // (docs/BASELINE.md, finding 1).
+        const bool tx_ok = pt->tx_exec_enabled && step > 0 && n_tx_frames < pt->tx_exec_window;
         if (step == 0) {
             ok = talker_forward_prefill(&pt->talker, &pt->talker_kv, pt->sched, prompt.input_embed.data(), prompt.T_ctx,
                                         use_fa, clamp_fp16, step_dump, &fw);

@@ -57,7 +57,7 @@ extern "C" {
 // git short hash + commit date string returned by qt_version(); for
 // binding compat checks, QT_ABI_VERSION is the only number that
 // matters.
-#define QT_ABI_VERSION 2
+#define QT_ABI_VERSION 3
 
 // Returns a static string of the form "<git-hash> (<date>)" identifying
 // the exact commit this binary was built from. Safe to call from any
@@ -320,6 +320,13 @@ struct qt_tts_params {
     int             ref_spk_dim;
     const int32_t * ref_codes;
     int             ref_T;
+
+    // ABI v3. Progressive streaming start (streaming path only). When > 0 the
+    // first audio chunk is emitted after this many codec frames, and
+    // each following chunk doubles in size up to codec_chunk_sec, so the
+    // first audio leaves after ~first frames instead of a full chunk.
+    // 0 keeps every chunk codec_chunk_sec long (upstream framing).
+    int codec_first_chunk_frames;
 };
 
 // Initialise to the standard defaults. Strings NULL, seed -1,
@@ -357,6 +364,10 @@ QT_API int qt_n_speakers(const struct qt_context * q);
 // Name of speaker i, valid for i in [0, qt_n_speakers). Returns NULL when
 // i is out of range. The pointer stays valid until qt_free. UTF-8.
 QT_API const char * qt_speaker_name(const struct qt_context * q, int i);
+
+// 1 when the talker runs on a GPU backend, 0 on CPU (or a NULL handle).
+// Lets a host pick backend dependent defaults (e.g. stream framing).
+QT_API int qt_has_gpu(const struct qt_context * q);
 
 #ifdef __cplusplus
 }

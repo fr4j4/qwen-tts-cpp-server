@@ -208,10 +208,19 @@ Los execs quedaron **ON por defecto** (opt-out) tras validar la campaña: si fal
    generación), determinismo md5 estable, wrap cruzado en vivo sin
    crash. **A/B por oído aprobado** (mismo texto/seed: indistinguible
    para el evaluador humano). RTF global ~0.154.
+   ⚠️ **Regresión detectada en fase 0 (2026-10-14)**: cuando
+   `T_ctx + frames > W` la ventana desaloja el prompt con el texto y el
+   modelo deja de leer (texto de 739 chars: 30 s y recall ASR 0,41 vs
+   58 s y 0,99 en legacy). Ver `docs/BASELINE.md`, hallazgo 1.
+   ✅ Corregido en fase 1 (`claude/fase-1-streaming`): el exec atiende
+   mientras `n_past < W` y luego sigue legacy sobre el mismo KV (sin wrap).
+   A/B por oído aprobado (2026-10-14), junto con los chunks progresivos
+   del streaming (indistinguibles en textos de 7, 21 y 62 s).
 3. **OOM → HTTP 503** (§2 Bug 4).
 4. Soak producción → monitorizar execs en producción (defaults ya volteados a ON; el soak ES producción).
 5. Warmup en el provider Python (esconde ~2.3 s de CUDA init) y
    streaming PCM (TTFA real ~35 ms ya existe; kali-core pide wav
    one-shot hoy).
-6. `tests/regression.sh` que automatice §6.
+6. `tests/regression.sh` que automatice §6. ✅ hecho (fase 0), con chequeo
+   de contenido por ASR opcional; línea base en `docs/BASELINE.md`.
 7. Tag/release con binaries (sm_86) para las 2 PCs.

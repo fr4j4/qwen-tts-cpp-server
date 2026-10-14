@@ -38,6 +38,9 @@ struct tts_request {
     std::string format;        // "pcm" (stream) or "wav" (one-shot)
     float       speed;         // OAI speed, parsed then ignored (no time stretch in the ABI)
     int64_t     seed = -1;     // Seed for deterministic generation (-1 = random)
+    std::string language;      // optional language label ("" = server default)
+    float       chunk_sec = 0.0f;         // optional max stream chunk in seconds (<= 0 = server default)
+    int         first_chunk_frames = -1;  // optional progressive start in frames (< 0 = server default, 0 = off)
 };
 
 // The adapter pushes mono f32 24 kHz audio here. Returns false to abort the
@@ -143,6 +146,15 @@ static bool tts_parse_request(const std::string & body, tts_request & req, std::
 
     yyjson_val * seed = yyjson_obj_get(root, "seed");
     req.seed          = yyjson_is_num(seed) ? (int64_t) yyjson_get_int(seed) : -1;
+
+    yyjson_val * language = yyjson_obj_get(root, "language");
+    req.language          = yyjson_is_str(language) ? yyjson_get_str(language) : "";
+
+    yyjson_val * chunk_sec = yyjson_obj_get(root, "chunk_sec");
+    req.chunk_sec          = yyjson_is_num(chunk_sec) ? (float) yyjson_get_num(chunk_sec) : 0.0f;
+
+    yyjson_val * first_chunk = yyjson_obj_get(root, "first_chunk_frames");
+    req.first_chunk_frames   = yyjson_is_num(first_chunk) ? (int) yyjson_get_int(first_chunk) : -1;
 
     yyjson_doc_free(doc);
 

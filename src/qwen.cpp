@@ -109,6 +109,15 @@ void qt_log(qt_log_level level, const char * fmt, ...) {
     if (!fmt) {
         return;
     }
+    // DEBUG lines (sampler traces) only with QWEN_DEBUG=1 : off the hot
+    // path in production, available for the bisection harnesses.
+    static const bool debug_on = [] {
+        const char * e = std::getenv("QWEN_DEBUG");
+        return e && e[0] == '1';
+    }();
+    if (level == QT_LOG_DEBUG && !debug_on) {
+        return;
+    }
     char    stackbuf[512];
     char *  buf    = stackbuf;
     int     needed = 0;
@@ -221,6 +230,7 @@ void qt_tts_default_params(struct qt_tts_params * p) {
     p->on_chunk_user_data     = nullptr;
     p->codec_chunk_sec        = 24.0f;
     p->codec_left_context_sec = 2.0f;
+    p->codec_first_chunk_frames = 0;
     p->ref_spk_emb            = nullptr;
     p->ref_spk_dim            = 0;
     p->ref_codes              = nullptr;
@@ -545,6 +555,10 @@ int qt_n_speakers(const struct qt_context * q) {
         return 0;
     }
     return (int) q->pt.speakers.size();
+}
+
+int qt_has_gpu(const struct qt_context * q) {
+    return (q && q->pt.bp.has_gpu) ? 1 : 0;
 }
 
 const char * qt_speaker_name(const struct qt_context * q, int i) {

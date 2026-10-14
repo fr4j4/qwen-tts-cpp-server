@@ -191,7 +191,7 @@ export default function App() {
             // Waveform fluida: append O(n) al buffer vivo (sin copias ni
             // re-renders); el canvas se redibuja solo a 60 fps vía rAF.
             livePcmRef.current.append(e.bytes)
-            // Start once the first ~1 s of audio are buffered.
+            // Start once the first ~250 ms of audio are buffered.
             if (player && !player.isStarted && (e.count ?? 0) >= MIN_START_SAMPLES) {
               player.start()
             }

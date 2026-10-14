@@ -370,7 +370,7 @@ static bool code_predictor_step(const TalkerWeights *        tw,
         int   cg = sample_top_k_p(logits.data(), (int) logits.size(), temperature, top_k, top_p, 1.0f, nullptr, 0, seed,
                                   subseq_base + 1, &u_g);
         if (subseq_base + 1 < 32) {
-            fprintf(stderr, "[Sample-CP] g=0 c=%d u=%.10f subseq=%lld\n", cg, (double) u_g,
+            qt_log(QT_LOG_DEBUG, "[Sample-CP] g=0 c=%d u=%.10f subseq=%lld", cg, (double) u_g,
                     (long long) (subseq_base + 1));
         }
         if (cg < 0) {
@@ -394,7 +394,7 @@ static bool code_predictor_step(const TalkerWeights *        tw,
         int   cg = sample_top_k_p(logits.data(), (int) logits.size(), temperature, top_k, top_p, 1.0f, nullptr, 0, seed,
                                   subseq_base + 1 + g, &u_g);
         if (subseq_base + 1 + g < 32) {
-            fprintf(stderr, "[Sample-CP] g=%d c=%d u=%.10f subseq=%lld\n", g, cg, (double) u_g,
+            qt_log(QT_LOG_DEBUG, "[Sample-CP] g=%d c=%d u=%.10f subseq=%lld", g, cg, (double) u_g,
                     (long long) (subseq_base + 1 + g));
         }
         if (cg < 0) {

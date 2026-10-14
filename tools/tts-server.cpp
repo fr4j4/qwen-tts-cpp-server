@@ -8,7 +8,9 @@
 #include "qwen.h"
 #include "version.h"
 
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -24,7 +26,13 @@ static void print_usage(const char * prog) {
             "  --port <n>              Listen port (default: 8080)\n"
             "  --lang <name>           Language label (default: auto)\n"
             "  --no-fa                 Disable flash attention\n"
-            "  --clamp-fp16            Clamp hidden states to FP16 range\n",
+            "  --clamp-fp16            Clamp hidden states to FP16 range\n"
+            "  --chunk-sec <f>         Max streamed audio chunk in seconds (default and cap: 24.0)\n"
+            "  --first-chunk-frames <n> Progressive start: first chunk after n codec frames,\n"
+            "                          doubling up to --chunk-sec (default: GPU 2, CPU 0 = off)\n"
+            "  --left-context-sec <f>  Codec left context per chunk in seconds (default: GPU 6.0, CPU 2.0)\n"
+            "  --no-warmup             Skip the warmup synthesis before listening\n"
+            "  --threads <n>           CPU threads for ggml (default: physical cores)\n",
             prog);
 }
 
@@ -42,6 +50,10 @@ int main(int argc, char ** argv) {
     server_config cfg;
     bool          use_fa     = true;
     bool          clamp_fp16 = false;
+    float         chunk_sec  = 24.0f;
+    int           first_chunk_frames = -1;  // -1 : backend default (GPU 2, CPU 0)
+    bool          warmup             = true;
+    float         left_ctx_sec       = -1.0f;  // < 0 : backend default (GPU 6.0, CPU 2.0)
 
     for (int i = 1; i < argc; i++) {
         const char * arg = argv[i];
@@ -59,6 +71,16 @@ int main(int argc, char ** argv) {
             use_fa = false;
         } else if (!std::strcmp(arg, "--clamp-fp16")) {
             clamp_fp16 = true;
+        } else if (!std::strcmp(arg, "--chunk-sec") && i + 1 < argc) {
+            chunk_sec = (float) std::atof(argv[++i]);
+        } else if (!std::strcmp(arg, "--first-chunk-frames") && i + 1 < argc) {
+            first_chunk_frames = std::atoi(argv[++i]);
+        } else if (!std::strcmp(arg, "--threads") && i + 1 < argc) {
+            setenv("QWEN_N_THREADS", argv[++i], 1);
+        } else if (!std::strcmp(arg, "--no-warmup")) {
+            warmup = false;
+        } else if (!std::strcmp(arg, "--left-context-sec") && i + 1 < argc) {
+            left_ctx_sec = (float) std::atof(argv[++i]);
         } else if (!std::strcmp(arg, "--help") || !std::strcmp(arg, "-h")) {
             print_usage(argv[0]);
             return 0;
@@ -87,6 +109,22 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // Backend dependent stream framing. GPU : progressive start (first
+    // audio after 2 frames) with 6 s of codec left context, which covers
+    // the codec transformer window (72 frames = 5.76 s) and keeps the
+    // chunked audio close to a one block decode. CPU : the codec decode
+    // dominates (~60 ms/frame) and RTF is already > 1, so the extra
+    // decodes would only slow it down ; keep the upstream framing.
+    const bool gpu = qt_has_gpu(q) != 0;
+    if (first_chunk_frames < 0) {
+        first_chunk_frames = gpu ? 2 : 0;
+    }
+    if (left_ctx_sec < 0.0f) {
+        left_ctx_sec = gpu ? 6.0f : 2.0f;
+    }
+    fprintf(stderr, "[Server] stream: %s, first chunk %d frames, chunk cap %.1f s, left context %.1f s\n",
+            gpu ? "GPU" : "CPU", first_chunk_frames, chunk_sec, left_ctx_sec);
+
     tts_backend be;
     be.model_id = basename_of(talker_path);
     int n       = qt_n_speakers(q);
@@ -97,11 +135,19 @@ int main(int argc, char ** argv) {
     // The adapter always drives the streaming pipeline : on_chunk routes to
     // the shared sink, which either streams to the socket (pcm) or fills a
     // one-shot buffer (wav). Either way the audio path is identical.
-    be.synthesize = [q, &lang](const tts_request & req, const tts_sink & sink, std::string & err) -> int {
+    be.synthesize = [q, &lang, chunk_sec, first_chunk_frames, left_ctx_sec](const tts_request & req, const tts_sink & sink,
+                                                              std::string & err) -> int {
         struct qt_tts_params p;
         qt_tts_default_params(&p);
         p.text = req.input.c_str();
-        p.lang = lang.c_str();
+        p.lang = req.language.empty() ? lang.c_str() : req.language.c_str();
+        // Capped at 24 s (the upstream default): one codec decode over a
+        // longer block reserves GBs of VRAM and ggml aborts on OOM (a
+        // 62 s block asked for 4 GB on the 0.6B and killed the server).
+        const float req_chunk      = req.chunk_sec > 0.0f ? req.chunk_sec : chunk_sec;
+        p.codec_chunk_sec          = req_chunk < 24.0f ? req_chunk : 24.0f;
+        p.codec_left_context_sec   = left_ctx_sec;
+        p.codec_first_chunk_frames = req.first_chunk_frames >= 0 ? req.first_chunk_frames : first_chunk_frames;
         if (!req.voice.empty() && qt_n_speakers(q) > 0) {
             p.speaker = req.voice.c_str();
         }
@@ -126,6 +172,33 @@ int main(int argc, char ** argv) {
         }
         return 0;
     };
+
+    // Warmup before listening : the first synthesis of the process pays
+    // CUDA/cuBLAS init, graph allocation and CUDA graph capture. Running a
+    // short throwaway synthesis here keeps that off the first client
+    // request. Failure only warns (e.g. a Base model needs a reference).
+    if (warmup) {
+        tts_request w;
+        w.input = "Hola.";
+        w.seed  = 0;
+        if (!be.voices.empty()) {
+            w.voice = be.voices[0];
+        } else {
+            w.instructions = "A calm, clear voice.";
+        }
+        tts_sink    discard = [](const float *, int) { return true; };
+        std::string werr;
+        const auto  t0 = std::chrono::steady_clock::now();
+        const int   wrc = be.synthesize(w, discard, werr);
+        const long  ms  = (long) std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - t0)
+                             .count();
+        if (wrc == 0) {
+            fprintf(stderr, "[Server] warmup done in %ld ms\n", ms);
+        } else {
+            fprintf(stderr, "[Server] WARN: warmup failed (%d): %s\n", wrc, werr.c_str());
+        }
+    }
 
     int rc = tts_server_run(be, cfg);
     qt_free(q);
