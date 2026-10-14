@@ -57,7 +57,7 @@ extern "C" {
 // git short hash + commit date string returned by qt_version(); for
 // binding compat checks, QT_ABI_VERSION is the only number that
 // matters.
-#define QT_ABI_VERSION 2
+#define QT_ABI_VERSION 3
 
 // Returns a static string of the form "<git-hash> (<date>)" identifying
 // the exact commit this binary was built from. Safe to call from any
@@ -320,6 +320,13 @@ struct qt_tts_params {
     int             ref_spk_dim;
     const int32_t * ref_codes;
     int             ref_T;
+
+    // ABI v3. Progressive streaming start (streaming path only). When > 0 the
+    // first audio chunk is emitted after this many codec frames, and
+    // each following chunk doubles in size up to codec_chunk_sec, so the
+    // first audio leaves after ~first frames instead of a full chunk.
+    // 0 keeps every chunk codec_chunk_sec long (upstream framing).
+    int codec_first_chunk_frames;
 };
 
 // Initialise to the standard defaults. Strings NULL, seed -1,

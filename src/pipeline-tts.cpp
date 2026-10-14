@@ -648,10 +648,14 @@ qt_status pipeline_tts_synthesize(PipelineTTS *                pt,
     // Streaming rolling decoder. Holds the K major codes buffer, the
     // emit cursor and the left context window. push_frame triggers an
     // emit as soon as chunk_frames new frames have accumulated since
-    // the previous emit boundary ; flush drains the tail at EOS.
+    // the previous emit boundary ; flush drains the tail at EOS. With a
+    // progressive start (ABI v3) the first emit fires after
+    // codec_first_chunk_frames frames and the size doubles up to
+    // chunk_frames.
     codec_chunked_decoder_stream stream;
     if (streaming) {
-        stream.init(num_codebooks, chunk_frames, left_ctx_frames);
+        const int first_frames = params->abi_version >= 3 ? params->codec_first_chunk_frames : 0;
+        stream.init(num_codebooks, chunk_frames, left_ctx_frames, first_frames);
     }
 
     for (int step = 0; step < params->max_new_tokens; step++) {

@@ -28,9 +28,10 @@ SR = 24000
 BYTES_PER_SAMPLE = 2
 
 
-def run_once(host, port, text, voice, seed, save=None, timeout=600):
-    body = json.dumps({"input": text, "voice": voice, "seed": seed,
-                       "response_format": "pcm"}).encode()
+def run_once(host, port, text, voice, seed, save=None, timeout=600, extra=None):
+    req = {"input": text, "voice": voice, "seed": seed, "response_format": "pcm"}
+    req.update(extra or {})
+    body = json.dumps(req).encode()
     conn = http.client.HTTPConnection(host, port, timeout=timeout)
     conn.connect()
     t0 = time.perf_counter()
@@ -99,11 +100,12 @@ def main():
     ap.add_argument("-n", type=int, default=1, help="repeticiones")
     ap.add_argument("--label", default="")
     ap.add_argument("--save", help="guarda el PCM de la última repetición")
+    ap.add_argument("--extra", default="{}", help='campos JSON extra, p. ej. \'{"first_chunk_frames": 0}\'')
     a = ap.parse_args()
     text = a.text if a.text is not None else open(a.text_file, encoding="utf-8").read().strip()
     for i in range(a.n):
         r = run_once(a.host, a.port, text, a.voice, a.seed,
-                     save=a.save if i == a.n - 1 else None)
+                     save=a.save if i == a.n - 1 else None, extra=json.loads(a.extra))
         r = {"label": a.label, "rep": i, **r}
         print(json.dumps(r, ensure_ascii=False), flush=True)
         if "error" in r:

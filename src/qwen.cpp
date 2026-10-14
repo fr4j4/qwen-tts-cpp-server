@@ -221,6 +221,7 @@ void qt_tts_default_params(struct qt_tts_params * p) {
     p->on_chunk_user_data     = nullptr;
     p->codec_chunk_sec        = 24.0f;
     p->codec_left_context_sec = 2.0f;
+    p->codec_first_chunk_frames = 0;
     p->ref_spk_emb            = nullptr;
     p->ref_spk_dim            = 0;
     p->ref_codes              = nullptr;

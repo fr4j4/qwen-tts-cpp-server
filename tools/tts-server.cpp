@@ -9,6 +9,7 @@
 #include "version.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -24,7 +25,11 @@ static void print_usage(const char * prog) {
             "  --port <n>              Listen port (default: 8080)\n"
             "  --lang <name>           Language label (default: auto)\n"
             "  --no-fa                 Disable flash attention\n"
-            "  --clamp-fp16            Clamp hidden states to FP16 range\n",
+            "  --clamp-fp16            Clamp hidden states to FP16 range\n"
+            "  --chunk-sec <f>         Max streamed audio chunk in seconds (default and cap: 24.0)\n"
+            "  --first-chunk-frames <n> Progressive start: first chunk after n codec frames,\n"
+            "                          doubling up to --chunk-sec (default: 2, 0 = off)\n"
+            "  --left-context-sec <f>  Codec left context per chunk in seconds (default: 6.0)\n",
             prog);
 }
 
@@ -42,6 +47,9 @@ int main(int argc, char ** argv) {
     server_config cfg;
     bool          use_fa     = true;
     bool          clamp_fp16 = false;
+    float         chunk_sec  = 24.0f;
+    int           first_chunk_frames = 2;
+    float         left_ctx_sec       = 6.0f;  // >= the codec transformer window (72 frames = 5.76 s)
 
     for (int i = 1; i < argc; i++) {
         const char * arg = argv[i];
@@ -59,6 +67,12 @@ int main(int argc, char ** argv) {
             use_fa = false;
         } else if (!std::strcmp(arg, "--clamp-fp16")) {
             clamp_fp16 = true;
+        } else if (!std::strcmp(arg, "--chunk-sec") && i + 1 < argc) {
+            chunk_sec = (float) std::atof(argv[++i]);
+        } else if (!std::strcmp(arg, "--first-chunk-frames") && i + 1 < argc) {
+            first_chunk_frames = std::atoi(argv[++i]);
+        } else if (!std::strcmp(arg, "--left-context-sec") && i + 1 < argc) {
+            left_ctx_sec = (float) std::atof(argv[++i]);
         } else if (!std::strcmp(arg, "--help") || !std::strcmp(arg, "-h")) {
             print_usage(argv[0]);
             return 0;
@@ -97,11 +111,19 @@ int main(int argc, char ** argv) {
     // The adapter always drives the streaming pipeline : on_chunk routes to
     // the shared sink, which either streams to the socket (pcm) or fills a
     // one-shot buffer (wav). Either way the audio path is identical.
-    be.synthesize = [q, &lang](const tts_request & req, const tts_sink & sink, std::string & err) -> int {
+    be.synthesize = [q, &lang, chunk_sec, first_chunk_frames, left_ctx_sec](const tts_request & req, const tts_sink & sink,
+                                                              std::string & err) -> int {
         struct qt_tts_params p;
         qt_tts_default_params(&p);
         p.text = req.input.c_str();
-        p.lang = lang.c_str();
+        p.lang = req.language.empty() ? lang.c_str() : req.language.c_str();
+        // Capped at 24 s (the upstream default): one codec decode over a
+        // longer block reserves GBs of VRAM and ggml aborts on OOM (a
+        // 62 s block asked for 4 GB on the 0.6B and killed the server).
+        const float req_chunk      = req.chunk_sec > 0.0f ? req.chunk_sec : chunk_sec;
+        p.codec_chunk_sec          = req_chunk < 24.0f ? req_chunk : 24.0f;
+        p.codec_left_context_sec   = left_ctx_sec;
+        p.codec_first_chunk_frames = req.first_chunk_frames >= 0 ? req.first_chunk_frames : first_chunk_frames;
         if (!req.voice.empty() && qt_n_speakers(q) > 0) {
             p.speaker = req.voice.c_str();
         }
