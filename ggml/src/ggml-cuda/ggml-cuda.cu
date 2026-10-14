@@ -368,6 +368,24 @@ static ggml_cuda_device_info ggml_cuda_init() {
             CUDA_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleSpin));
         }
 
+        // [qwen-tts] GGML_CUDA_SCHEDULE=auto|spin|yield|blocking overrides the
+        // host wait strategy for synchronize calls. "auto" (CUDA default) spins
+        // a core while the GPU works when cores are free; "blocking" sleeps the
+        // thread on an OS primitive instead (no busy core, some µs per sync).
+        if (const char * sched = getenv("GGML_CUDA_SCHEDULE")) {
+            unsigned int flag = cudaDeviceScheduleAuto;
+            if (!strcmp(sched, "spin")) {
+                flag = cudaDeviceScheduleSpin;
+            } else if (!strcmp(sched, "yield")) {
+                flag = cudaDeviceScheduleYield;
+            } else if (!strcmp(sched, "blocking")) {
+                flag = cudaDeviceScheduleBlockingSync;
+            }
+            CUDA_CHECK(cudaSetDevice(physical_id));
+            CUDA_CHECK(cudaSetDeviceFlags(flag));
+            GGML_LOG_INFO("  Device %d: host sync schedule = %s\n", id, sched);
+        }
+
 #endif  // defined(GGML_USE_HIP)
     }
 
