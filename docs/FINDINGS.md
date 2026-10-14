@@ -214,6 +214,8 @@ Los execs quedaron **ON por defecto** (opt-out) tras validar la campaña: si fal
    58 s y 0,99 en legacy). Ver `docs/BASELINE.md`, hallazgo 1.
    ✅ Corregido en fase 1 (`claude/fase-1-streaming`): el exec atiende
    mientras `n_past < W` y luego sigue legacy sobre el mismo KV (sin wrap).
+   A/B por oído aprobado (2026-10-14), junto con los chunks progresivos
+   del streaming (indistinguibles en textos de 7, 21 y 62 s).
 3. **OOM → HTTP 503** (§2 Bug 4).
 4. Soak producción → monitorizar execs en producción (defaults ya volteados a ON; el soak ES producción).
 5. Warmup en el provider Python (esconde ~2.3 s de CUDA init) y

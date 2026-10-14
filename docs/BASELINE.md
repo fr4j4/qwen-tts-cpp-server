@@ -287,6 +287,20 @@ Muestras WAV en `samples/fase1/` (no versionadas, `*.wav` está en
    topa en 24 s. Un bloque de 62 s pedía 4 GB de VRAM y ggml abortaba el
    proceso (FINDINGS Bug 4).
 
+### A/B por oído (2026-10-14, usuario)
+
+Escuchado con un reproductor A/B sincronizado (mismo punto de reproducción al
+cambiar de versión), voz Serena, seed 42:
+
+| prueba | veredicto |
+|---|---|
+| Fix de la ventana, texto largo (739 caracteres) | el fix lee todo y suena bien |
+| Chunks progresivos, corto (7 s) | indistinguibles |
+| Chunks progresivos, medio (21 s) | indistinguibles |
+| Chunks progresivos, largo (62 s) | indistinguibles |
+
+Los cambios de audio de la fase 1 quedan **aprobados por oído**.
+
 ### Otros cambios de la fase 1
 
 - `language` en el JSON (`"spanish"`, `"english"`, …) llega al prompt
