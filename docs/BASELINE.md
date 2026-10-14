@@ -197,6 +197,17 @@ ve un cliente HTTP** con los defaults actuales.
    acepta hasta gcc 13. Sin ese flag nvcc usa su g++-13 y compila bien (así se
    hizo `build-gpu/`).
 
+## Resultado de `tests/regression.sh` (2026-10-14, con ASR)
+
+| backend / modo | resultado | nota |
+|---|---|---|
+| GPU `build-gpu`, defaults (exec W=512) | 35 PASS, **1 FAIL** | `largo`: recall ASR 0,41 (hallazgo 1) |
+| GPU `build-gpu`, `KALI_QWEN_TXEXEC=0` | 36 PASS, 0 FAIL | |
+| CPU `build-cpu` | 36 PASS, 0 FAIL | md5 medio `9e59e8cb…`, estable x3 y tras la secuencia hostil |
+
+md5 GPU (seed 42, ggml v0.24): corto `fa6e0764…`, medio `392db29d…`
+(idénticos exec/legacy), largo `645ac909…` (exec, truncado) / `244e3c13…` (legacy).
+
 ## Archivos de esta fase
 
 - `tests/bench_stream.py`: cliente de streaming (primer byte, RTF, ráfagas, md5).
