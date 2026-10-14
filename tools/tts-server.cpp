@@ -9,6 +9,7 @@
 #include "version.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -113,6 +114,112 @@ static std::vector<std::string> split_text(const std::string & s, size_t target)
     flush();
     return pieces;
 }
+
+// Joins between the pieces of a split text. Each piece is a whole
+// synthesis : it ends with the silence the model leaves after EOS and the
+// next one starts with its own lead-in silence, so a join measured 1.0-2.0 s
+// of silence against 0.4-0.8 s between sentences inside a piece, which made
+// the joins audible. This filter sits between the pipeline and the client
+// sink and keeps at most trail_keep of silence at the end of a piece and
+// lead_keep at the start of the next one. Silence = 10 ms blocks under
+// -44 dBFS RMS ; cuts happen inside silence, with a 5 ms fade, so they
+// cannot click. Silence inside a piece is held back, not dropped : it is
+// released as soon as speech resumes.
+struct join_trimmer {
+    static constexpr int   kBlock = 240;     // 10 ms at 24 kHz
+    static constexpr float kThr   = 0.006f;  // RMS, about -44 dBFS
+    static constexpr int   kFade  = 120;     // 5 ms
+
+    const tts_sink *   out        = nullptr;
+    int                lead_keep  = 0;
+    int                trail_keep = 0;
+    bool               leading    = false;  // dropping lead-in silence
+    bool               hold_trail = false;  // holding silence for a trailing cut
+    bool               spoke      = false;  // this piece already produced speech
+    std::vector<float> pend;                 // incomplete block
+    std::vector<float> lead;                 // last lead_keep silent samples
+    std::vector<float> held;                 // silence since the last speech
+
+    bool emit(const float * s, int n) { return n <= 0 || (*out)(s, n); }
+
+    void begin_piece(bool first, bool last) {
+        leading    = !first;
+        hold_trail = !last;
+        spoke      = false;
+        pend.clear();
+        lead.clear();
+        held.clear();
+    }
+
+    bool block(const float * b, int n) {
+        double e = 0.0;
+        for (int i = 0; i < n; i++) {
+            e += (double) b[i] * b[i];
+        }
+        const bool silent = n > 0 && std::sqrt(e / n) < kThr;
+        if (leading) {
+            if (silent) {
+                lead.insert(lead.end(), b, b + n);
+                if ((int) lead.size() > lead_keep) {
+                    lead.erase(lead.begin(), lead.end() - lead_keep);
+                }
+                return true;
+            }
+            leading = false;
+            for (int i = 0; i < kFade && i < (int) lead.size(); i++) {
+                lead[(size_t) i] *= (float) i / kFade;
+            }
+            if (!emit(lead.data(), (int) lead.size())) {
+                return false;
+            }
+            lead.clear();
+        }
+        // Silence before the first speech of a piece passes straight through
+        // (the first piece's lead-in is the time to first audio).
+        if (hold_trail && spoke) {
+            if (silent) {
+                held.insert(held.end(), b, b + n);
+                return true;
+            }
+            if (!emit(held.data(), (int) held.size())) {
+                return false;
+            }
+            held.clear();
+        }
+        spoke = spoke || !silent;
+        return emit(b, n);
+    }
+
+    bool push(const float * s, int n) {
+        pend.insert(pend.end(), s, s + n);
+        size_t off = 0;
+        for (; off + kBlock <= pend.size(); off += kBlock) {
+            if (!block(pend.data() + off, kBlock)) {
+                return false;
+            }
+        }
+        pend.erase(pend.begin(), pend.begin() + (std::ptrdiff_t) off);
+        return true;
+    }
+
+    bool end_piece() {
+        if (!pend.empty() && !block(pend.data(), (int) pend.size())) {
+            return false;
+        }
+        pend.clear();
+        if (hold_trail && !held.empty()) {
+            const int keep = (int) held.size() < trail_keep ? (int) held.size() : trail_keep;
+            for (int i = 0; i < kFade && i < keep; i++) {
+                held[(size_t) (keep - 1 - i)] *= (float) i / kFade;
+            }
+            if (!emit(held.data(), keep)) {
+                return false;
+            }
+        }
+        held.clear();
+        return true;
+    }
+};
 
 // Trim a path down to its file name for the reported model id.
 static std::string basename_of(const char * path) {
@@ -226,6 +333,10 @@ int main(int argc, char ** argv) {
         // the same stream, same seed. Short texts stay one piece.
         std::vector<std::string> pieces;
         if (split_chars > 0 && req.input.size() > (size_t) split_chars) {
+            // Pieces of at most split_chars / 2 bytes. Longer pieces (3/4 of
+            // split_chars : 3 instead of 4 for 1170 chars) skipped text on 2
+            // of 6 seeds (ASR recall 0.73 / 0.82), so the pieces stay short
+            // and join_trimmer smooths the joins instead.
             pieces = split_text(req.input, (size_t) split_chars / 2);
             fprintf(stderr, "[Server] long text (%zu bytes): %zu pieces\n", req.input.size(), pieces.size());
         } else {
@@ -257,11 +368,28 @@ int main(int argc, char ** argv) {
         };
         p.on_chunk_user_data = (void *) sink_ptr;
 
-        for (const std::string & piece : pieces) {
-            p.text              = piece.c_str();
+        // Several pieces : route the audio through the join trimmer (about
+        // 0.30 s kept at the end of a piece + 0.15 s at the start of the
+        // next, like a pause between sentences). One piece : untouched.
+        join_trimmer trim;
+        trim.out        = &sink;
+        trim.trail_keep = 24000 * 30 / 100;
+        trim.lead_keep  = 24000 * 15 / 100;
+        if (pieces.size() > 1) {
+            p.on_chunk = [](const float * s, int ns, void * u) -> bool {
+                return static_cast<join_trimmer *>(u)->push(s, ns);
+            };
+            p.on_chunk_user_data = (void *) &trim;
+        }
+        for (size_t k = 0; k < pieces.size(); k++) {
+            p.text = pieces[k].c_str();
+            trim.begin_piece(k == 0, k + 1 == pieces.size());
             struct qt_audio out = {};
             enum qt_status  rc  = qt_synthesize(q, &p, &out);
             qt_audio_free(&out);
+            if (rc == QT_STATUS_OK && pieces.size() > 1 && !trim.end_piece()) {
+                rc = QT_STATUS_CANCELLED;
+            }
             if (rc != QT_STATUS_OK) {
                 err = qt_last_error();
                 return (int) rc;
