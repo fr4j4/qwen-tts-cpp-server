@@ -36,6 +36,12 @@ void qt_set_error(const char * fmt, ...)
 
 void qt_set_error_v(const char * fmt, va_list ap);
 
+// Records that a graph allocation failed on this thread (a backend buffer
+// could not grow : out of device memory in practice). qt_synthesize turns
+// a failed synthesis with this mark into QT_STATUS_OOM. take() clears it.
+void qt_note_alloc_failure(void);
+bool qt_take_alloc_failure(void);
+
 // Throws std::runtime_error formatted with printf semantics. Tagged
 // noreturn so the compiler can prune unreachable branches at the call
 // site. Designed for the GGUF / codec load path where any failure means

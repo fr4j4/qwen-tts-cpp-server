@@ -163,6 +163,7 @@ static bool project_text_ids_backend(PipelineTTS * pt, const int32_t * ids, int 
 
     ggml_backend_sched_reset(pt->sched);
     if (!ggml_backend_sched_alloc_graph(pt->sched, graph)) {
+        qt_note_alloc_failure();
         ggml_backend_sched_reset(pt->sched);
         ggml_free(gctx);
         return false;

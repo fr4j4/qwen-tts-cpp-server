@@ -244,6 +244,7 @@ static bool code_predictor_run(const CodePredictorWeights * cw,
     ggml_backend_sched_reset(sched);
     if (!ggml_backend_sched_alloc_graph(sched, gf)) {
         fprintf(stderr, "[CodePredictor] FATAL: graph allocation failed\n");
+        qt_note_alloc_failure();
         ggml_backend_sched_reset(sched);
         ggml_free(gctx);
         return false;

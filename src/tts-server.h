@@ -214,6 +214,9 @@ static int tts_status_to_http(int rc) {
     if (rc == -1 || rc == -2) {
         return 400;
     }
+    if (rc == -4) {
+        return 503;  // QT_STATUS_OOM : transient, the process stays up
+    }
     return 502;
 }
 

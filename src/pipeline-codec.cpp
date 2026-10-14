@@ -182,6 +182,7 @@ std::vector<float> pipeline_codec_decode(PipelineCodec * pc, const int32_t * cod
 
     if (!ggml_backend_sched_alloc_graph(pc->sched, graph)) {
         qt_log(QT_LOG_ERROR, "[Pipeline] sched_alloc_graph failed");
+        qt_note_alloc_failure();
         ggml_backend_sched_reset(pc->sched);
         ggml_free(gctx);
         return {};
