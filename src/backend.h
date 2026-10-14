@@ -26,7 +26,12 @@ static int         g_backend_refs  = 0;
 // Physical core count heuristic (logical / 2 for HT/SMT).
 // Used for GGML CPU thread count: GEMM shares SIMD units across hyperthreads,
 // so one thread per physical core is optimal.
+// QWEN_N_THREADS overrides it (tts-server --threads sets it before init).
 static int backend_cpu_n_threads(void) {
+    const char * env = getenv("QWEN_N_THREADS");
+    if (env && atoi(env) > 0) {
+        return atoi(env);
+    }
     int n = (int) std::thread::hardware_concurrency() / 2;
     return n > 0 ? n : 1;
 }

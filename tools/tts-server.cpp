@@ -29,9 +29,10 @@ static void print_usage(const char * prog) {
             "  --clamp-fp16            Clamp hidden states to FP16 range\n"
             "  --chunk-sec <f>         Max streamed audio chunk in seconds (default and cap: 24.0)\n"
             "  --first-chunk-frames <n> Progressive start: first chunk after n codec frames,\n"
-            "                          doubling up to --chunk-sec (default: 2, 0 = off)\n"
-            "  --left-context-sec <f>  Codec left context per chunk in seconds (default: 6.0)\n"
-            "  --no-warmup             Skip the warmup synthesis before listening\n",
+            "                          doubling up to --chunk-sec (default: GPU 2, CPU 0 = off)\n"
+            "  --left-context-sec <f>  Codec left context per chunk in seconds (default: GPU 6.0, CPU 2.0)\n"
+            "  --no-warmup             Skip the warmup synthesis before listening\n"
+            "  --threads <n>           CPU threads for ggml (default: physical cores)\n",
             prog);
 }
 
@@ -50,9 +51,9 @@ int main(int argc, char ** argv) {
     bool          use_fa     = true;
     bool          clamp_fp16 = false;
     float         chunk_sec  = 24.0f;
-    int           first_chunk_frames = 2;
+    int           first_chunk_frames = -1;  // -1 : backend default (GPU 2, CPU 0)
     bool          warmup             = true;
-    float         left_ctx_sec       = 6.0f;  // >= the codec transformer window (72 frames = 5.76 s)
+    float         left_ctx_sec       = -1.0f;  // < 0 : backend default (GPU 6.0, CPU 2.0)
 
     for (int i = 1; i < argc; i++) {
         const char * arg = argv[i];
@@ -74,6 +75,8 @@ int main(int argc, char ** argv) {
             chunk_sec = (float) std::atof(argv[++i]);
         } else if (!std::strcmp(arg, "--first-chunk-frames") && i + 1 < argc) {
             first_chunk_frames = std::atoi(argv[++i]);
+        } else if (!std::strcmp(arg, "--threads") && i + 1 < argc) {
+            setenv("QWEN_N_THREADS", argv[++i], 1);
         } else if (!std::strcmp(arg, "--no-warmup")) {
             warmup = false;
         } else if (!std::strcmp(arg, "--left-context-sec") && i + 1 < argc) {
@@ -105,6 +108,22 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "[Server] FATAL: %s\n", qt_last_error());
         return 1;
     }
+
+    // Backend dependent stream framing. GPU : progressive start (first
+    // audio after 2 frames) with 6 s of codec left context, which covers
+    // the codec transformer window (72 frames = 5.76 s) and keeps the
+    // chunked audio close to a one block decode. CPU : the codec decode
+    // dominates (~60 ms/frame) and RTF is already > 1, so the extra
+    // decodes would only slow it down ; keep the upstream framing.
+    const bool gpu = qt_has_gpu(q) != 0;
+    if (first_chunk_frames < 0) {
+        first_chunk_frames = gpu ? 2 : 0;
+    }
+    if (left_ctx_sec < 0.0f) {
+        left_ctx_sec = gpu ? 6.0f : 2.0f;
+    }
+    fprintf(stderr, "[Server] stream: %s, first chunk %d frames, chunk cap %.1f s, left context %.1f s\n",
+            gpu ? "GPU" : "CPU", first_chunk_frames, chunk_sec, left_ctx_sec);
 
     tts_backend be;
     be.model_id = basename_of(talker_path);

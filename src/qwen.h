@@ -365,6 +365,10 @@ QT_API int qt_n_speakers(const struct qt_context * q);
 // i is out of range. The pointer stays valid until qt_free. UTF-8.
 QT_API const char * qt_speaker_name(const struct qt_context * q, int i);
 
+// 1 when the talker runs on a GPU backend, 0 on CPU (or a NULL handle).
+// Lets a host pick backend dependent defaults (e.g. stream framing).
+QT_API int qt_has_gpu(const struct qt_context * q);
+
 #ifdef __cplusplus
 }
 #endif

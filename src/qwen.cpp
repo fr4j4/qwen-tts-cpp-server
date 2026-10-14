@@ -557,6 +557,10 @@ int qt_n_speakers(const struct qt_context * q) {
     return (int) q->pt.speakers.size();
 }
 
+int qt_has_gpu(const struct qt_context * q) {
+    return (q && q->pt.bp.has_gpu) ? 1 : 0;
+}
+
 const char * qt_speaker_name(const struct qt_context * q, int i) {
     if (!q || i < 0 || i >= (int) q->pt.speakers.size()) {
         return NULL;
