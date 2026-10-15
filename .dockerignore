@@ -1,0 +1,13 @@
+# Keep the build context small: sources only.
+build*/
+dist/
+models/
+samples/
+checkpoints/
+.venv/
+webui/node_modules/
+webui/dist/
+**/*.gguf
+**/*.wav
+**/*.pcm
+*.log
