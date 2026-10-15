@@ -14,8 +14,8 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
@@ -150,6 +150,41 @@ class TTSRequest(BaseModel):
     stream: bool = False  # streaming mode (PCM passthrough)
     instructions: Optional[str] = None  # VoiceDesign instructions (voice description)
     seed: int = -1  # sampling seed; -1 = random
+
+
+# --------------------------------------------------------------------------- #
+#  /v1 passthrough : static/index.html talks to the /v1 API of tts-server
+#  (the same page tts-server embeds and serves on its own at GET /).
+# --------------------------------------------------------------------------- #
+@app.get("/v1/info")
+async def v1_info():
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(f"{CPP_SERVER_URL}/v1/info")
+    return Response(r.content, status_code=r.status_code, media_type="application/json")
+
+
+@app.post("/v1/audio/speech")
+async def v1_speech(request: Request):
+    body = await request.body()
+    client = httpx.AsyncClient(timeout=None)
+    req = client.build_request("POST", f"{CPP_SERVER_URL}/v1/audio/speech", content=body,
+                               headers={"Content-Type": "application/json"})
+    r = await client.send(req, stream=True)
+    if r.status_code != 200:
+        content = await r.aread()
+        await r.aclose()
+        await client.aclose()
+        return Response(content, status_code=r.status_code, media_type="application/json")
+
+    async def relay():
+        try:
+            async for chunk in r.aiter_bytes():
+                yield chunk
+        finally:
+            await r.aclose()
+            await client.aclose()
+
+    return StreamingResponse(relay(), media_type=r.headers.get("content-type", "audio/pcm"))
 
 
 @app.get("/api/health")
