@@ -7,6 +7,7 @@
 
 #include "qwen.h"
 #include "version.h"
+#include "webui_index.h"
 
 #include <chrono>
 #include <cmath>
@@ -262,7 +263,11 @@ int main(int argc, char ** argv) {
         } else if (!std::strcmp(arg, "--first-chunk-frames") && i + 1 < argc) {
             first_chunk_frames = std::atoi(argv[++i]);
         } else if (!std::strcmp(arg, "--threads") && i + 1 < argc) {
+#ifdef _WIN32
+            _putenv_s("QWEN_N_THREADS", argv[++i]);
+#else
             setenv("QWEN_N_THREADS", argv[++i], 1);
+#endif
         } else if (!std::strcmp(arg, "--split-chars") && i + 1 < argc) {
             split_chars = std::atoi(argv[++i]);
         } else if (!std::strcmp(arg, "--no-warmup")) {
@@ -322,6 +327,9 @@ int main(int argc, char ** argv) {
     for (int i = 0; i < qt_n_languages(q); i++) {
         be.languages.push_back(qt_language_name(q, i));
     }
+    be.backend = gpu ? "GPU" : "CPU";
+    be.version = QWEN_VERSION;
+    be.ui_html.assign((const char *) webui_index_html, webui_index_html_len);
 
     // The adapter always drives the streaming pipeline : on_chunk routes to
     // the shared sink, which either streams to the socket (pcm) or fills a

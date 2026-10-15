@@ -291,7 +291,7 @@ audio { width: 100%; margin-top: 12px; }
     <details>
       <summary id="infoSummary" style="cursor: pointer; color: var(--accent2); font-size: 0.85rem;">ℹ️ <span data-i18n="infoTitle">Info del modelo</span></summary>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 0.78rem; margin-top: 12px;">
-        <div><span style="color: var(--text-dim);" data-i18n="infoModel">Modelo</span><br><span style="color: var(--accent);">Qwen3-TTS 0.6B (CustomVoice)</span></div>
+        <div><span style="color: var(--text-dim);" data-i18n="infoModel">Modelo</span><br><span id="infoModelName" style="color: var(--accent);">Qwen3-TTS 0.6B (CustomVoice)</span></div>
         <div><span style="color: var(--text-dim);" data-i18n="infoParams">Parámetros</span><br><span style="color: var(--accent);">600M (Q4_K_M)</span></div>
         <div><span style="color: var(--text-dim);" data-i18n="infoFormat">Formato</span><br><span style="color: var(--accent);">GGUF (Q4_K_M)</span></div>
         <div><span style="color: var(--text-dim);" data-i18n="infoInference">Inferencia</span><br><span id="infoBackend" style="color: var(--success);">CPU-only</span></div>
@@ -357,8 +357,7 @@ audio { width: 100%; margin-top: 12px; }
       <div class="field">
         <label data-i18n="lblFormat">Formato</label>
         <select id="formatSelect">
-          <option value="mp3" selected>MP3</option>
-          <option value="wav">WAV</option>
+          <option value="wav" selected>WAV</option>
         </select>
       </div>
     </div>
@@ -525,44 +524,87 @@ function setLang(lang) {
   if (instrInput && i18n[lang].instructionsPlaceholder) instrInput.placeholder = i18n[lang].instructionsPlaceholder;
 }
 
-// --- Detect backend and VoiceDesign on load ---
+// --- Detect backend, model, voices and languages on load (GET /v1/info) ---
+const VOICE_DESIGN_EXAMPLES = [
+  "A young female voice, warm and gentle, moderate pacing.",
+  "A deep male voice, calm and authoritative, slow pacing.",
+  "A crying, deeply sad, and trembling female voice, slow pacing.",
+  "An excited and energetic young male voice, fast pacing.",
+  "A soft whispering female voice, mysterious and quiet.",
+  "An elderly male voice, wise and slow, with a slight rasp.",
+  "A cheerful female voice, bright and bubbly, fast pacing.",
+  "A serious male voice, neutral and professional, moderate pacing.",
+];
+let voiceDesign = false;
 (async () => {
   try {
-    const r = await fetch('/api/health');
+    const r = await fetch('/v1/info');
     const data = await r.json();
-    if (data.backend && data.backend.includes('GPU')) {
+    if (data.model) $('infoModelName').textContent = data.model;
+    if (data.backend === 'GPU') {
       $('backendBadge').className = 'badge badge-gpu';
       $('backendBadge').textContent = 'GPU';
-      $('infoBackend').textContent = 'GPU (CUDA)';
+      $('infoBackend').textContent = 'GPU';
       $('infoBackend').style.color = 'var(--accent)';
       $('infoVram').textContent = '~1-2 GB';
       $('infoVram').style.color = 'var(--accent)';
     }
-    // Show VoiceDesign controls if model supports it
+    // Voices: keep the labelled options the model has, add any others.
+    if (Array.isArray(data.voices) && data.voices.length) {
+      const sel = $('voiceSelect'), keep = new Set(data.voices.map(v => v.toLowerCase()));
+      [...sel.options].forEach(o => { if (!keep.has(o.value)) o.remove(); });
+      data.voices.forEach(v => {
+        if (![...sel.options].some(o => o.value === v.toLowerCase())) {
+          const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
+        }
+      });
+    }
+    if (Array.isArray(data.languages) && data.languages.length) {
+      const sel = $('langSelect'), keep = new Set(data.languages);
+      [...sel.options].forEach(o => { if (!keep.has(o.value)) o.remove(); });
+      data.languages.forEach(l => {
+        if (![...sel.options].some(o => o.value === l)) {
+          const o = document.createElement('option'); o.value = l; o.textContent = l; sel.appendChild(o);
+        }
+      });
+    }
+    // VoiceDesign: no named speakers, the voice comes from the instructions.
     if (data.voice_design) {
-      // Hide voice selector — VoiceDesign ignores speaker, voice is defined by instructions
+      voiceDesign = true;
       $('voiceSelect').parentElement.style.display = 'none';
-      // Show instructions panel directly (no toggle — instructions are mandatory in VoiceDesign)
       instructionsMode = true;
       $('instructionsPanel').style.display = 'block';
       $('instructionsReqLabel').style.display = 'block';
-      // Load example presets
-      const sp = await fetch('/api/speakers');
-      const spData = await sp.json();
-      if (spData.voice_design_examples && spData.voice_design_examples.length) {
-        const container = $('instructionsPresets');
-        spData.voice_design_examples.forEach(ex => {
-          const btn = document.createElement('button');
-          btn.className = 'preset-btn';
-          btn.textContent = ex.length > 40 ? ex.substring(0, 37) + '...' : ex;
-          btn.title = ex;
-          btn.addEventListener('click', () => { $('instructionsInput').value = ex; });
-          container.appendChild(btn);
-        });
-      }
+      const container = $('instructionsPresets');
+      VOICE_DESIGN_EXAMPLES.forEach(ex => {
+        const btn = document.createElement('button');
+        btn.className = 'preset-btn';
+        btn.textContent = ex.length > 40 ? ex.substring(0, 37) + '...' : ex;
+        btn.title = ex;
+        btn.addEventListener('click', () => { $('instructionsInput').value = ex; });
+        container.appendChild(btn);
+      });
     }
   } catch (e) {}
 })();
+
+// Request body for POST /v1/audio/speech.
+function speechBody(text, format) {
+  const body = {
+    input: text,
+    language: $('langSelect').value,
+    response_format: format,
+    seed: parseInt($('seedInput').value),
+  };
+  if (!voiceDesign) body.voice = $('voiceSelect').value;
+  if (instructionsMode && $('instructionsInput').value.trim()) body.instructions = $('instructionsInput').value.trim();
+  return body;
+}
+
+async function apiError(res) {
+  const err = await res.json().catch(() => ({}));
+  return (err.error && err.error.message) || err.detail || res.statusText || t('errServer');
+}
 
 // --- Streaming toggle ---
 function toggleStream() {
@@ -621,23 +663,14 @@ async function synthesizeStream() {
   const startTime = performance.now();
 
   try {
-    const res = await fetch('/api/tts', {
+    const res = await fetch('/v1/audio/speech', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        input: text,
-        voice: $('voiceSelect').value,
-        language: $('langSelect').value,
-        stream: true,
-        seed: parseInt($('seedInput').value),
-        ...(instructionsMode && $('instructionsInput').value.trim()
-          ? { instructions: $('instructionsInput').value.trim() } : {}),
-      }),
+      body: JSON.stringify(speechBody(text, 'pcm')),
     });
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || t('errServer'));
+      throw new Error(await apiError(res));
     }
 
     // Read PCM stream and play via Web Audio API
@@ -719,23 +752,14 @@ async function synthesize() {
   const startTime = performance.now();
   try {
     const fmt = $('formatSelect').value;
-    const res = await fetch('/api/tts', {
+    const res = await fetch('/v1/audio/speech', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        input: text,
-        voice: $('voiceSelect').value,
-        language: $('langSelect').value,
-        format: fmt,
-        seed: parseInt($('seedInput').value),
-        ...(instructionsMode && $('instructionsInput').value.trim()
-          ? { instructions: $('instructionsInput').value.trim() } : {}),
-      }),
+      body: JSON.stringify(speechBody(text, fmt)),
     });
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || t('errServer'));
+      throw new Error(await apiError(res));
     }
 
     const blob = await res.blob();

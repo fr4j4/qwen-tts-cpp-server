@@ -37,6 +37,20 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
+# Portable (distributable) build : binaries find their shared libraries
+# and the dynamically loaded ggml backends next to themselves, wherever
+# the folder is unpacked, and libstdc++ / libgcc are linked statically so
+# the binaries only need the system glibc. Use together with
+# -DGGML_BACKEND_DL=ON -DBUILD_SHARED_LIBS=ON -DGGML_CPU_ALL_VARIANTS=ON
+# -DGGML_NATIVE=OFF (scripts/package.sh sets all of them).
+option(QWEN_PORTABLE "Relocatable build for distribution ($ORIGIN rpath, static libstdc++)" OFF)
+if(QWEN_PORTABLE AND NOT WIN32 AND NOT APPLE)
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
+    set(CMAKE_INSTALL_RPATH "$ORIGIN")
+    set(CMAKE_SKIP_BUILD_RPATH OFF)
+    add_link_options($<$<LINK_LANGUAGE:CXX>:-static-libstdc++> $<$<OR:$<LINK_LANGUAGE:CXX>,$<LINK_LANGUAGE:C>>:-static-libgcc>)
+endif()
+
 # Audio tokenizer tensor names can exceed default GGML_MAX_NAME of 64
 add_compile_definitions(GGML_MAX_NAME=128)
 
@@ -169,9 +183,23 @@ link_ggml_backends(qwen-tts)
 
 # tts-server : OpenAI-compatible HTTP server over the TTS pipeline.
 # Always built : it is part of the project, not an optional add-on.
+# Web UI embedded in tts-server (served at GET /), regenerated whenever
+# static/index.html changes.
+set(WEBUI_HEADER "${CMAKE_CURRENT_BINARY_DIR}/webui_index.h")
+add_custom_command(
+    OUTPUT "${WEBUI_HEADER}"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/static/index.html"
+            "-DOUTPUT=${WEBUI_HEADER}" -DNAME=webui_index_html
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-file.cmake"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/static/index.html" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-file.cmake"
+    COMMENT "Embedding static/index.html"
+)
+add_custom_target(webui_embed DEPENDS "${WEBUI_HEADER}")
+
 add_executable(tts-server tools/tts-server.cpp)
 target_link_libraries(tts-server PRIVATE qwen-core httplib yyjson)
 link_ggml_backends(tts-server)
+add_dependencies(tts-server webui_embed)
 
 # test-abi-c : pure C99 smoke test that locks in the public ABI contract.
 # Compiles qwen.h with a C compiler under -Wall -Werror -pedantic and

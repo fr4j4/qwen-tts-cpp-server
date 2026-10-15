@@ -1,0 +1,57 @@
+# CI: portable CPU builds on Linux and Windows for every PR and push to
+# development. Checks that the code compiles with both toolchains, that the
+# public C ABI still holds (test-abi-c) and that the packaged tts-server
+# starts from its own folder. No model is downloaded (no synthesis here ;
+# tests/regression.sh runs on a GPU machine).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [development]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux-cpu:
+    # 22.04 : glibc 2.35, so the binaries run on most current distros.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake make g++
+      - name: Build and package
+        run: scripts/package.sh cpu
+      - name: ABI test
+        run: build-pkg-cpu/test-abi-c
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-cpu
+          path: dist/*.tar.gz*
+          retention-days: 7
+
+  windows-cpu:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build and package
+        shell: pwsh
+        run: scripts/package.ps1 -Variant cpu
+      - name: ABI test
+        shell: pwsh
+        run: build-pkg-cpu/Release/test-abi-c.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-cpu
+          path: dist/*.zip*
+          retention-days: 7

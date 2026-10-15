@@ -54,6 +54,9 @@ struct tts_backend {
     std::string              model_id;  // reported by GET /v1/models
     std::vector<std::string> voices;    // reported by GET /v1/voices, may be empty
     std::vector<std::string> languages; // accepted "language" values besides "auto", may be empty
+    std::string              backend;   // "GPU" or "CPU", reported by GET /v1/info
+    std::string              version;   // build identity, reported by GET /v1/info
+    std::string              ui_html;   // page served at GET / (empty = no UI)
     // Run synthesis. When the request streams, the adapter routes the ABI
     // on_chunk to sink ; otherwise it pushes the whole buffer once. Returns
     // the ABI status (0 on success), and fills err with the ABI message on
@@ -312,6 +315,36 @@ static void tts_handle_voices(const tts_backend & be, const httplib::Request &, 
     yyjson_mut_doc_free(doc);
 }
 
+// GET /v1/info : what the web UI needs to set itself up in one call.
+static void tts_handle_info(const tts_backend & be, const httplib::Request &, httplib::Response & res) {
+    yyjson_mut_doc * doc  = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val * root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_str(doc, root, "model", be.model_id.c_str());
+    yyjson_mut_obj_add_str(doc, root, "backend", be.backend.c_str());
+    yyjson_mut_obj_add_str(doc, root, "version", be.version.c_str());
+    // No named speakers : the model takes a voice description instead
+    // (VoiceDesign) or a reference clip (Base).
+    yyjson_mut_obj_add_bool(doc, root, "voice_design", be.voices.empty());
+    yyjson_mut_val * voices = yyjson_mut_arr(doc);
+    for (const std::string & v : be.voices) {
+        yyjson_mut_arr_add_str(doc, voices, v.c_str());
+    }
+    yyjson_mut_obj_add_val(doc, root, "voices", voices);
+    yyjson_mut_val * langs = yyjson_mut_arr(doc);
+    yyjson_mut_arr_add_str(doc, langs, "auto");
+    for (const std::string & l : be.languages) {
+        yyjson_mut_arr_add_str(doc, langs, l.c_str());
+    }
+    yyjson_mut_obj_add_val(doc, root, "languages", langs);
+    char * json = yyjson_mut_write(doc, 0, NULL);
+    res.set_content(json ? json : "{}", "application/json");
+    if (json) {
+        free(json);
+    }
+    yyjson_mut_doc_free(doc);
+}
+
 static void tts_handle_health(const httplib::Request &, httplib::Response & res) {
     res.set_content("{\"status\":\"ok\"}", "application/json");
 }
@@ -363,6 +396,12 @@ static int tts_server_run(const tts_backend & be, const server_config & cfg) {
     svr.Get("/v1/voices",
             [&be](const httplib::Request & req, httplib::Response & res) { tts_handle_voices(be, req, res); });
     svr.Get("/health", tts_handle_health);
+    svr.Get("/v1/info", [&be](const httplib::Request & req, httplib::Response & res) { tts_handle_info(be, req, res); });
+    if (!be.ui_html.empty()) {
+        svr.Get("/", [&be](const httplib::Request &, httplib::Response & res) {
+            res.set_content(be.ui_html, "text/html; charset=utf-8");
+        });
+    }
 
     signal(SIGINT, tts_on_signal);
     signal(SIGTERM, tts_on_signal);
