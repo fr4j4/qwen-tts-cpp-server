@@ -60,6 +60,22 @@ foreach ($exe in "tts-server.exe", "qwen-tts.exe", "qwen-codec.exe", "quantize.e
 # ggml core DLLs and every backend DLL ggml_backend_load_all() can pick up.
 Get-ChildItem $Bin -Filter "ggml*.dll" | Copy-Item -Destination $Stage
 
+# MSVC runtime + OpenMP (vcomp140.dll, used by the CPU backend): a clean
+# Windows has neither unless the VC++ redistributable is installed, so
+# ship them next to the binaries.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vswhere) {
+    $vs = & $vswhere -latest -property installationPath
+    $redist = Get-ChildItem (Join-Path $vs "VC\Redist\MSVC") -Directory -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending | Select-Object -First 1
+    if ($redist) {
+        foreach ($sub in "Microsoft.VC14*.CRT", "Microsoft.VC14*.OpenMP") {
+            Get-ChildItem (Join-Path $redist.FullName "x64") -Directory -Filter $sub -ErrorAction SilentlyContinue |
+                ForEach-Object { Get-ChildItem $_.FullName -Filter "*.dll" | Copy-Item -Destination $Stage }
+        }
+    } else { Write-Warning "VC redist folder not found ; the package will need the VC++ redistributable" }
+} else { Write-Warning "vswhere not found ; the package will need the VC++ redistributable" }
+
 if ($Variant -eq "cuda") {
     # CUDA runtime + cuBLAS next to the backend ; the driver comes from the system.
     $cudaBin = Join-Path $env:CUDA_PATH "bin"

@@ -80,6 +80,12 @@ done
 # backends ggml_backend_load_all() picks up from the binary's folder.
 cp -L "$B/libggml.so.0" "$B/libggml-base.so.0" "$STAGE/"
 cp "$B"/libggml-cpu-*.so "$STAGE/"
+# OpenMP runtime used by the CPU backend: not installed on minimal systems
+# (e.g. the ubuntu Docker image), so it ships in the package too.
+gomp=$(ldd "$B/libggml-base.so.0" | awk '$1 == "libgomp.so.1" { print $3 }')
+if [ -n "$gomp" ] && [ -f "$gomp" ]; then
+  cp -L "$gomp" "$STAGE/"
+fi
 [ "$VARIANT" = vulkan ] && cp "$B/libggml-vulkan.so" "$STAGE/"
 if [ "$VARIANT" = cuda ]; then
   cp "$B/libggml-cuda.so" "$STAGE/"
