@@ -28,3 +28,7 @@ server.log
 # OS files
 .DS_Store
 Thumbs.db
+# Portable builds and packages (scripts/package.sh)
+build-dl/
+build-pkg*/
+dist/
