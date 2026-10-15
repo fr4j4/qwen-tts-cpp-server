@@ -18,6 +18,8 @@
 #
 # Extra cmake flags can be passed in CMAKE_ARGS (e.g. CUDA architectures:
 #   CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=86" scripts/package.sh cuda).
+# JOBS caps the parallel compile jobs (default: all cores) ; the CUDA and
+# all-CPU-variant builds are heavy, use e.g. JOBS=4 on a desktop in use.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
@@ -60,7 +62,7 @@ if [ -z "${SKIP_BUILD:-}" ]; then
     -DGGML_CPU_ALL_VARIANTS=ON -DGGML_NATIVE=OFF \
     -DGGML_BLAS=OFF \
     "${BACKEND_FLAGS[@]}" "${HOST_FLAG[@]}" ${CMAKE_ARGS:-}
-  cmake --build "$BUILD_DIR" --config Release -j "$(nproc)"
+  cmake --build "$BUILD_DIR" --config Release -j "${JOBS:-$(nproc)}"
 fi
 
 B=$BUILD_DIR

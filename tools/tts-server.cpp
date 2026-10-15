@@ -263,7 +263,11 @@ int main(int argc, char ** argv) {
         } else if (!std::strcmp(arg, "--first-chunk-frames") && i + 1 < argc) {
             first_chunk_frames = std::atoi(argv[++i]);
         } else if (!std::strcmp(arg, "--threads") && i + 1 < argc) {
+#ifdef _WIN32
+            _putenv_s("QWEN_N_THREADS", argv[++i]);
+#else
             setenv("QWEN_N_THREADS", argv[++i], 1);
+#endif
         } else if (!std::strcmp(arg, "--split-chars") && i + 1 < argc) {
             split_chars = std::atoi(argv[++i]);
         } else if (!std::strcmp(arg, "--no-warmup")) {
