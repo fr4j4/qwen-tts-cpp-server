@@ -90,3 +90,28 @@ como legado.
 ## Verificación
 
 Ver la sección "Resultados de la verificación" al final de este archivo.
+
+## Resultados de la verificación (2026-10-15, Kali, RTX 3060 + Ryzen 7 3700X)
+
+| prueba | resultado |
+|---|---|
+| Paquete `linux-x64-cuda` (422 MB) descomprimido en otra carpeta | carga todas sus libs desde ahí (`/proc/<pid>/maps`); del sistema sólo `libcuda.so` (driver) y `libstdc++` (la pide el backend CUDA) |
+| Variante de CPU elegida al arrancar | `libggml-cpu-haswell.so` (Zen 2) |
+| `tests/regression.sh` GPU con el paquete | **34/34**, md5 idénticos a `build-gpu` en corto, medio, largo y extralargo |
+| `tests/regression.sh --backend cpu` con el paquete (forzando CPU) | **34/34**, md5 idénticos a `build-cpu` (OpenBLAS): corto `ae21234d`, medio `9e59e8cb`, largo `ee31b22b`, extralargo `2da10d3a` |
+| Web UI y `/v1/info` desde el paquete | `GET /` 200 (28,8 KB), `/v1/info` con voces e idiomas del modelo |
+| Imagen Docker `cpu` (161 MB) | arranca, UI y `/v1/info` ok, healthcheck `healthy`, usuario `tts`; corto en CPU con md5 `ae21234d` (idéntico a la fase 0) |
+| CPU sin OpenBLAS | md5 idéntico al build con OpenBLAS (`9e59e8cb` en medio) |
+
+Encontrado y corregido durante la verificación: el backend CPU usa OpenMP y
+la imagen `ubuntu` no trae `libgomp.so.1` (el binario no arrancaba); ahora el
+paquete lo incluye. En Windows, `package.ps1` incluye por lo mismo
+`vcomp140.dll` y el runtime de MSVC.
+
+No verificado en esta máquina:
+
+- **Vulkan**: no hay headers de Vulkan ni `glslc` (instalarlos pide sudo); se
+  compila por primera vez en `release.yml`.
+- **Windows**: el primer build real es el de `ci.yml` / `release.yml`.
+- **Imagen Docker `cuda`**: no la construí localmente (descarga ~5 GB y
+  compila CUDA); usa el mismo paquete verificado arriba.
