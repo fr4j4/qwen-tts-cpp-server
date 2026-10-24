@@ -2,13 +2,17 @@
 #   - Vulkan package (CPU + Vulkan backends): the default download, runs on
 #     NVIDIA, AMD and Intel GPUs with just the driver, CPU otherwise.
 #   - CUDA package (CPU + CUDA backends, cudart + cuBLAS included).
-# Runs on a v* tag (and then publishes a GitHub Release with the packages
-# and their .sha256) or by hand from the Actions tab (packages only, as
-# workflow artifacts).
+# Runs on every push to main (publishes the GitHub Release v<VERSION>, with
+# the packages and their .sha256, unless that release already exists: bump
+# the VERSION file to cut a new one), on a v* tag, or by hand from the
+# Actions tab (packages only, as workflow artifacts).
+# Building CUDA needs no GPU: nvcc compiles on the hosted runner ; a GPU is
+# only needed to run the result.
 name: Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -20,7 +24,35 @@ env:
   CUDA_VERSION: "12.4.1"
 
 jobs:
+  meta:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(tr -d '[:space:]' < VERSION)"
+          fi
+          publish=false
+          if [[ "$GITHUB_REF" == refs/tags/v* || "$GITHUB_REF" == refs/heads/main ]]; then
+            if gh release view "v$version" >/dev/null 2>&1; then
+              echo "::warning::release v$version already exists: packages are built but not published (bump VERSION)"
+            else
+              publish=true
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
   linux-vulkan:
+    needs: meta
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +68,8 @@ jobs:
           echo "VULKAN_SDK=$HOME/vulkansdk/${VULKAN_SDK_VERSION}/x86_64" >> "$GITHUB_ENV"
           echo "$HOME/vulkansdk/${VULKAN_SDK_VERSION}/x86_64/bin" >> "$GITHUB_PATH"
       - name: Build and package
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: scripts/package.sh vulkan
       - uses: actions/upload-artifact@v4
         with:
@@ -43,6 +77,7 @@ jobs:
           path: dist/*.tar.gz*
 
   linux-cuda:
+    needs: meta
     runs-on: ubuntu-22.04
     # CUDA 12.4 on Ubuntu 22.04 (glibc 2.35) ; architectures from
     # CMakeLists.txt (Turing to Ada).
@@ -56,6 +91,8 @@ jobs:
         with:
           fetch-depth: 0
       - name: Build and package
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           scripts/package.sh cuda
@@ -65,6 +102,7 @@ jobs:
           path: dist/*.tar.gz*
 
   windows-vulkan:
+    needs: meta
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -81,13 +119,14 @@ jobs:
           "$sdk\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       - name: Build and package
         shell: pwsh
-        run: scripts/package.ps1 -Variant vulkan
+        run: scripts/package.ps1 -Variant vulkan -Version "${{ needs.meta.outputs.version }}"
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x64-vulkan
           path: dist/*.zip*
 
   windows-cuda:
+    needs: meta
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -100,15 +139,15 @@ jobs:
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
       - name: Build and package
         shell: pwsh
-        run: scripts/package.ps1 -Variant cuda
+        run: scripts/package.ps1 -Variant cuda -Version "${{ needs.meta.outputs.version }}"
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x64-cuda
           path: dist/*.zip*
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-vulkan, linux-cuda, windows-vulkan, windows-cuda]
+    if: needs.meta.outputs.publish == 'true'
+    needs: [meta, linux-vulkan, linux-cuda, windows-vulkan, windows-cuda]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -120,4 +159,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          tag_name: v${{ needs.meta.outputs.version }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true

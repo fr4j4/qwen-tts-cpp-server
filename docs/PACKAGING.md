@@ -53,12 +53,17 @@ arranca desde la carpeta del paquete antes de comprimir.
 - **`ci.yml`** (cada PR y push a `development`): builds portables de CPU en
   Linux (Ubuntu 22.04) y Windows (MSVC 2022), test del ABI C y arranque del
   binario empaquetado. No descarga modelos.
-- **`release.yml`** (tag `v*` o a mano desde la pestaña Actions): los cuatro
-  paquetes (Vulkan y CUDA × Linux y Windows). Con un tag `v*` publica además
+- **`release.yml`** (push a `main`, tag `v*` o a mano desde la pestaña Actions):
+  los cuatro paquetes (Vulkan y CUDA × Linux y Windows). Compilar CUDA no
+  necesita GPU (nvcc corre en el runner); la GPU sólo hace falta para
+  ejecutar. Con un push a `main` publica además el Release `v<VERSION>`
+  (archivo `VERSION`) si ese Release aún no existe; con un tag `v*` publica
   un GitHub Release con los paquetes y sus `.sha256`; a mano, deja los
   paquetes como artefactos del workflow.
 
-Para publicar una versión: `git tag v0.1.0 && git push origin v0.1.0`.
+Para publicar una versión: subir el número del archivo `VERSION` y pasar a
+`main` (o `git tag v0.1.0 && git push origin v0.1.0`). Si el Release `v<VERSION>`
+ya existe, los paquetes se compilan pero no se publican.
 
 ## Docker
 

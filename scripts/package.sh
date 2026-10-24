@@ -28,7 +28,9 @@ VARIANT=${1:-cpu}
 case "$VARIANT" in
   cpu)    BACKEND_FLAGS=() ;;
   vulkan) BACKEND_FLAGS=(-DGGML_VULKAN=ON) ;;
-  cuda)   BACKEND_FLAGS=(-DGGML_CUDA=ON -DGGML_CUDA_GRAPHS=ON) ;;
+  # NCCL off : -devel CUDA images ship libnccl-dev, ggml would link it and the
+  # package (which does not carry libnccl.so.2) would silently fall back to CPU.
+  cuda)   BACKEND_FLAGS=(-DGGML_CUDA=ON -DGGML_CUDA_GRAPHS=ON -DGGML_CUDA_NCCL=OFF) ;;
   *) echo "variant must be cpu, vulkan or cuda" >&2; exit 2 ;;
 esac
 
