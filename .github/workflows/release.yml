@@ -117,6 +117,15 @@ jobs:
           $sdk = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           "VULKAN_SDK=$sdk" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "$sdk\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      # ggml-vulkan wants SPIRV-Headers as a CMake package and the Windows
+      # SDK installer does not ship its config files: build the matching tag.
+      - name: SPIRV-Headers
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch "vulkan-sdk-$env:VULKAN_SDK_VERSION" https://github.com/KhronosGroup/SPIRV-Headers.git spirv-src
+          cmake -S spirv-src -B spirv-build "-DCMAKE_INSTALL_PREFIX=$env:RUNNER_TEMP\spirv"
+          cmake --install spirv-build --config Release
+          "CMAKE_PREFIX_PATH=$env:RUNNER_TEMP\spirv" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Build and package
         shell: pwsh
         run: scripts/package.ps1 -Variant vulkan -Version "${{ needs.meta.outputs.version }}"
